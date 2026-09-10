@@ -405,10 +405,17 @@ def render_autonomous_tab():
         df = pd.DataFrame(targets)[["id", "target", "scan_interval_minutes", "last_scanned_at", "active"]]
         st.dataframe(df, use_container_width=True)
 
-        remove_id = st.number_input("Deactivate target ID", min_value=0, value=0, key="deactivate_target_id")
-        if st.button("Deactivate") and remove_id > 0:
-            db.remove_target(int(remove_id))
-            st.rerun()
+        with st.form(key="deactivate_form"):
+            remove_id = st.number_input("Deactivate target ID", min_value=0, value=0, step=1, key="deactivate_target_id_input")
+            submit_deactivate = st.form_submit_button("Deactivate Target")
+            
+            if submit_deactivate:
+                if remove_id > 0:
+                    db.remove_target(int(remove_id))
+                    st.success(f"Target ID {remove_id} has been successfully deactivated/removed.")
+                    st.rerun()
+                else:
+                    st.warning("Please enter a valid target ID greater than 0.")
     else:
         st.info("No targets yet — add one above.")
 
