@@ -39,11 +39,13 @@ import urllib.parse
 import base64
 import hashlib
 import concurrent.futures
+import subprocess
 
 # Import local backend modules for Autonomous SOC & Connectors
 import db
 import connectors as c
 import notifier
+import scheduler
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -353,27 +355,47 @@ class AdvancedReconEngine:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def render_autonomous_tab():
-    """Renders the Autonomous SOC live monitoring tab from dashboard_tab.py logic[cite: 2]."""
+    """Renders the Autonomous SOC live monitoring tab from dashboard_tab.py logic."""
     st.markdown("# Autonomous SOC — Live Monitoring")
     st.markdown(
         "<p style='color:#9ca3af;'>Background scheduler scans these targets on "
-        "its own schedule and pushes new findings to Discord. This view is read-only.</p>",
+        "its own schedule and pushes new findings to Discord. You can also trigger live scans instantly here.</p>",
         unsafe_allow_html=True,
     )
 
     db.init_db()
 
-    with st.expander("➕ Add a target to autonomous monitoring"):
+    with st.expander("➕ Add a target to autonomous monitoring & live scan"):
         col1, col2 = st.columns([3, 1])
         with col1:
             new_target = st.text_input("Domain or IP", key="new_auto_target")
         with col2:
             interval = st.number_input("Scan every (min)", min_value=5, value=60, key="new_auto_interval")
-        if st.button("Add Target", use_container_width=True):
+            
+        if st.button("Add & Scan Target Now", use_container_width=True):
             if new_target:
                 ok = db.add_target(new_target, int(interval))
                 if ok:
-                    st.success(f"Added {new_target}.")
+                    st.success(f"Added {new_target} to database.")
+                    
+                    with st.spinner(f"Running live autonomous security scan on {new_target}..."):
+                        try:
+                            targets_list = db.list_targets()
+                            target_id = next((t['id'] for t in targets_list if t['target'] == new_target), None)
+                            
+                            if target_id:
+                                cfg = {
+                                    "discord_webhook_url": st.secrets.get("DISCORD_WEBHOOK_URL", ""),
+                                    "nvd_api_key": st.secrets.get("NVD_API_KEY", ""),
+                                    "virustotal_api_key": st.secrets.get("VIRUSTOTAL_API_KEY", ""),
+                                    "abuseipdb_api_key": st.secrets.get("ABUSEIPDB_API_KEY", ""),
+                                    "zoomeye_api_key": st.secrets.get("ZOOMEYE_API_KEY", "")
+                                }
+                                scheduler.run_scan_cycle(new_target, target_id, cfg)
+                                st.success(f"Live scan completed for {new_target}!")
+                                st.rerun()
+                        except Exception as e:
+                            st.error(f"Target added, but live scan encountered an issue: {e}")
                 else:
                     st.warning("Already being monitored.")
 
@@ -388,7 +410,7 @@ def render_autonomous_tab():
             db.remove_target(int(remove_id))
             st.rerun()
     else:
-        st.info("No targets yet — add one above, or run: `python3 scheduler.py add <domain>`")
+        st.info("No targets yet — add one above.")
 
     st.markdown("### Recent Findings")
     findings = db.recent_findings(limit=100)
@@ -400,7 +422,7 @@ def render_autonomous_tab():
             fdf = fdf[fdf["severity"].isin(sev_filter)]
         st.dataframe(fdf, use_container_width=True)
     else:
-        st.info("No findings recorded yet — the scheduler needs at least one scan cycle to complete.")
+        st.info("No findings recorded yet — run a scan or add a target to begin.")
 
     st.markdown("### Recent Scan Runs")
     runs = db.recent_scan_runs(limit=20)
@@ -408,7 +430,7 @@ def render_autonomous_tab():
         rdf = pd.DataFrame(runs)[["target", "started_at", "status", "new_findings_count", "error"]]
         st.dataframe(rdf, use_container_width=True)
     else:
-        st.info("Scheduler hasn't run yet. Start it with: `python3 scheduler.py run`")
+        st.info("No scan runs recorded yet.")
 
 
 def main():
@@ -535,7 +557,7 @@ def main():
     groq_key = st.secrets.get("GROQ_API_KEY", "")
     nvd_key = st.secrets.get("NVD_API_KEY", "")
     
-    local_db = db  # Utilizing shared persistence db module
+    local_db = db 
 
     with st.sidebar:
         st.markdown(f"### Operator: `{st.session_state.user}`")
