@@ -406,13 +406,13 @@ def render_autonomous_tab():
         st.dataframe(df, use_container_width=True)
 
         with st.form(key="deactivate_form"):
-            remove_id = st.number_input("Deactivate target ID", min_value=0, value=0, step=1, key="deactivate_target_id_input")
-            submit_deactivate = st.form_submit_button("Deactivate Target")
+            remove_id = st.number_input("Target ID to Delete", min_value=0, value=0, step=1, key="deactivate_target_id_input")
+            submit_delete = st.form_submit_button("Delete Target Permanently")
             
-            if submit_deactivate:
+            if submit_delete:
                 if remove_id > 0:
                     db.remove_target(int(remove_id))
-                    st.success(f"Target ID {remove_id} has been successfully deactivated/removed.")
+                    st.success(f"Target ID {remove_id} has been completely removed from the system.")
                     st.rerun()
                 else:
                     st.warning("Please enter a valid target ID greater than 0.")
