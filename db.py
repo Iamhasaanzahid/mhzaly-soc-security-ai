@@ -91,7 +91,10 @@ def add_target(target: str, interval_minutes: int = 60) -> bool:
 def remove_target(target_id: int):
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("UPDATE targets SET active = 0 WHERE id = ?", (target_id,))
+    # Foreign key constraints اور منسلک ریکارڈز کو مدنظر رکھتے ہوئے ٹارगेट کو ہمیشہ کے لیے ڈیلیٹ کریں
+    cursor.execute("DELETE FROM findings WHERE target_id = ?", (target_id,))
+    cursor.execute("DELETE FROM scan_runs WHERE target_id = ?", (target_id,))
+    cursor.execute("DELETE FROM targets WHERE id = ?", (target_id,))
     conn.commit()
     conn.close()
 
