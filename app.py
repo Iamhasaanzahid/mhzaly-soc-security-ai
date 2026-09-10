@@ -92,7 +92,7 @@ class BugBountyReconEngine:
             for rtype in ['A', 'AAAA', 'MX', 'TXT', 'NS', 'SOA']:
                 try:
                     answers = dns.resolver.resolve(clean_target, rtype)
-                    report['dns'][rtype] = [str(r) for r in answers]
+                    report['dns'][rtype] = list(set([str(r) for r in answers]))
                 except Exception:
                     report['dns'][rtype] = []
 
@@ -119,6 +119,8 @@ class BugBountyReconEngine:
                 report['technologies'].append('Cloudflare')
             if 'django' in headers_str or 'csrftoken' in str(resp.cookies):
                 report['technologies'].append('Django')
+            
+            report['technologies'] = list(set(report['technologies']))
 
             fuzz_paths = [
                 '/.env', '/robots.txt', '/sitemap.xml', '/git/config', 
@@ -159,7 +161,7 @@ class BugBountyReconEngine:
 
 
 class AutonomousAgentExecutor:
-    """Autonomous AI-Driven Agentic Loop for deep target reconnaissance, self-correction, and exploit validation."""
+    """Autonomous AI-Driven Agentic Loop for deep target reconnaissance and vulnerability triage."""
     @staticmethod
     def run_agentic_cycle(target: str, groq_key: str) -> Dict[str, Any]:
         agent_log = []
@@ -169,26 +171,26 @@ class AutonomousAgentExecutor:
         recon_data = BugBountyReconEngine.deep_recon(target)
         agent_log.append(f"[+] Recon complete. Status: {recon_data.get('status_code')}, Server: {recon_data.get('server')}")
         
-        technologies = list(set(recon_data.get('technologies', [])))
+        technologies = recon_data.get('technologies', [])
         exposed = recon_data.get('exposed_files', [])
         agent_log.append(f"[+] Detected unique tech stack: {technologies}")
         agent_log.append(f"[+] Discovered valid exposed endpoints without duplicates: {len(exposed)}")
 
-        # Step 2: AI-Powered Context Evaluation & Self-Correction Strategy
-        ai_payload_suggestions = []
+        # Step 2: AI-Powered Context Evaluation & Authorized Security Analysis
+        ai_analysis = "AI analysis skipped or key missing."
         if groq_key:
             prompt_context = f"""
-            Target: {target}
-            Technologies: {technologies}
-            Exposed Endpoints: {[e['path'] for e in exposed]}
-            Analyze these endpoints deeply like an expert human security researcher. Suggest precise custom payloads (SQLi, XSS, Path Traversal, or API Auth Bypass) and self-correction steps if a WAF blocks the requests.
+            Target Scope: {target}
+            Detected Technologies: {technologies}
+            Exposed Sensitive Endpoints: {[e['path'] for e in exposed]}
+            Please perform an authorized technical risk assessment, architectural vulnerability triage, and provide professional security hardening guidelines for these findings.
             """
             try:
                 headers = {'Authorization': f'Bearer {groq_key}', 'Content-Type': 'application/json'}
                 payload = {
                     'model': 'openai/gpt-oss-120b',
                     'messages': [
-                        {'role': 'system', 'content': 'You are an autonomous offensive security AI agent executing deep target penetration testing. Provide precise payloads and execution steps.'},
+                        {'role': 'system', 'content': 'You are an authorized enterprise security engineer and bug bounty analyst performing authorized web application architecture assessment, vulnerability triage, and security hardening analysis. Provide comprehensive technical analysis, risk evaluations, and defensive remediation guidance.'},
                         {'role': 'user', 'content': prompt_context}
                     ],
                     'temperature': 0.4,
@@ -197,13 +199,11 @@ class AutonomousAgentExecutor:
                 resp = requests.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers, timeout=25)
                 if resp.status_code == 200:
                     ai_analysis = resp.json()['choices'][0]['message']['content']
-                    agent_log.append("[+] AI Agent successfully generated deep context analysis and customized payload vectors.")
+                    agent_log.append("[+] AI Agent successfully generated deep security context and hardening recommendations.")
                 else:
-                    ai_analysis = f"AI Agent LLM Error: {resp.status_code}"
+                    ai_analysis = f"AI Agent LLM Error: {resp.status_code} - {resp.text}"
             except Exception as e:
                 ai_analysis = f"AI Agent connection exception: {e}"
-        else:
-            ai_analysis = "Groq API key not provided; autonomous AI deep reasoning skipped."
 
         return {
             'target': target,
@@ -678,13 +678,13 @@ def main():
 
     elif module == "Autonomous AI-Agent Red/Blue Pipeline":
         st.markdown("# Fully Autonomous AI-Driven Bug Bounty & Purple Team Agent")
-        st.markdown("<p style='color: #9ca3af;'>Give target scope. The Autonomous AI Agent takes complete control, performing deep iterative recon, filtering duplicate endpoints/CVEs, executing self-correction loops, and synthesizing human-level exploit vectors.</p>", unsafe_allow_html=True)
+        st.markdown("<p style='color: #9ca3af;'>Give target scope. The Autonomous AI Agent takes complete control, performing deep iterative recon, filtering duplicate endpoints/CVEs, executing analysis, and synthesizing professional security assessment reports.</p>", unsafe_allow_html=True)
 
         pipeline_target = st.text_input("Target Domain, IP Address, or Keyword", placeholder="e.g., target-domain.com or 8.8.8.8")
 
         if st.button("Launch Autonomous AI Agent Loop", use_container_width=True):
             if pipeline_target:
-                with st.spinner("Autonomous AI Agent taking full control: running deep recon, self-correction, and deduplication loops..."):
+                with st.spinner("Autonomous AI Agent taking full control: running deep recon and deduplication loops..."):
                     local_db.init_db()
                     
                     # Run Autonomous Agent Loop & Threat Triage
@@ -728,7 +728,7 @@ def main():
 * **Classification:** FULLY AUTOMATED RED/BLUE AGENTIC INTELLIGENCE
 
 ## 1. Executive Summary & Autonomous Recon Overview
-Autonomous AI Agent intelligence gathering was completed against `{pipeline_target}` with duplicate filtering and self-correction loops enabled.
+Autonomous AI Agent intelligence gathering was completed against `{pipeline_target}` with duplicate filtering enabled.
 - **VirusTotal Malicious Count:** `{ti_res['vt_summary']['malicious']}`
 - **AbuseIPDB Score:** `{ti_res['abuse_summary']['score']}%`
 - **Unique Detected Technologies:** `{tech_md}`
@@ -751,7 +751,7 @@ Autonomous AI Agent intelligence gathering was completed against `{pipeline_targ
 ## 4. Correlated Unique Vulnerabilities (NIST NVD v2.0 - Deduplicated CVSS >= 4.0)
 {cve_list_md}
 
-## 5. Autonomous AI Agent Deep Exploit Analysis & Hardening Recommendations
+## 5. Autonomous AI Agent Deep Architectural Analysis & Hardening Recommendations
 {ai_analysis_text}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
