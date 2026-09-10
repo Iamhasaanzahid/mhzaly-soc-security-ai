@@ -9,12 +9,13 @@ session, or `nohup python3 scheduler.py &`). It is the ONLY thing that runs
 whatever this script has written to the shared SQLite DB.
 
 Usage:
-    python3 scheduler.py run                 # start the infinite monitoring loop
-    python3 scheduler.py add example.com      # add a target
-    python3 scheduler.py add example.com 30   # add with a 30-min scan interval
-    python3 scheduler.py list                 # list active targets
-    python3 scheduler.py remove <id>          # deactivate a target
+    python3 scheduler.py run                    # start the infinite monitoring loop
+    python3 scheduler.py add example.com        # add a target
+    python3 scheduler.py add example.com 30     # add with a 30-min scan interval
+    python3 scheduler.py list                   # list active targets
+    python3 scheduler.py remove <id>            # deactivate a target
     python3 scheduler.py scan-once example.com  # run one scan cycle immediately (testing)
+    python3 scheduler.py run-all-once           # run scan for all active targets in DB
 """
 
 import sys
@@ -72,45 +73,45 @@ def run_scan_cycle(target: str, target_id: int, cfg: dict):
         for p in ports:
             fp = db.make_fingerprint(target, "open_port", str(p["port"]))
             is_new = db.upsert_finding(target_id, "open_port", fp,
-                                        f"Open port {p['port']} ({p['service']})", p, "MEDIUM")
+                                       f"Open port {p['port']} ({p['service']})", p, "MEDIUM")
             if is_new:
                 new_count += 1
                 notifier.send_discord_alert(cfg["discord_webhook_url"], target, "Open Port",
-                                             "MEDIUM", f"Port {p['port']}/{p['service']} is open", p)
+                                           "MEDIUM", f"Port {p['port']}/{p['service']} is open", p)
 
         # 2. Subdomains via crt.sh
         subs = c.crtsh_subdomains(host)
         for sub in subs:
             fp = db.make_fingerprint(target, "subdomain", sub)
             is_new = db.upsert_finding(target_id, "subdomain", fp,
-                                        f"Subdomain discovered: {sub}", {"subdomain": sub}, "INFO")
+                                       f"Subdomain discovered: {sub}", {"subdomain": sub}, "INFO")
             if is_new:
                 new_count += 1
                 notifier.send_discord_alert(cfg["discord_webhook_url"], target, "New Subdomain",
-                                             "INFO", sub, {"subdomain": sub})
+                                           "INFO", sub, {"subdomain": sub})
 
         # 3. Exposed sensitive endpoints
         exposed = c.fuzz_endpoints(f"https://{host}")
         for e in exposed:
             fp = db.make_fingerprint(target, "exposed_endpoint", e["path"])
             is_new = db.upsert_finding(target_id, "exposed_endpoint", fp,
-                                        f"Exposed endpoint: {e['path']} ({e['status']})", e, "HIGH")
+                                       f"Exposed endpoint: {e['path']} ({e['status']})", e, "HIGH")
             if is_new:
                 new_count += 1
                 notifier.send_discord_alert(cfg["discord_webhook_url"], target, "Exposed Endpoint",
-                                             "HIGH", e["path"], e)
+                                           "HIGH", e["path"], e)
 
         # 4. Threat intel (VT + AbuseIPDB) — score changes matter, not just first sight
         vt = c.virustotal_check(host, cfg["virustotal_api_key"])
         if vt.get("malicious", 0) > 0:
             fp = db.make_fingerprint(target, "vt_malicious", str(vt["malicious"]))
             is_new = db.upsert_finding(target_id, "vt_malicious", fp,
-                                        f"VirusTotal flags {vt['malicious']} engines as malicious",
-                                        vt, "CRITICAL")
+                                       f"VirusTotal flags {vt['malicious']} engines as malicious",
+                                       vt, "CRITICAL")
             if is_new:
                 new_count += 1
                 notifier.send_discord_alert(cfg["discord_webhook_url"], target, "VirusTotal Flag",
-                                             "CRITICAL", f"{vt['malicious']} engines flagged malicious", vt)
+                                           "CRITICAL", f"{vt['malicious']} engines flagged malicious", vt)
 
         # 5. NVD — correlate against detected tech (kept simple: keyword = host's base name)
         keyword = host.split(".")[0]
@@ -118,23 +119,23 @@ def run_scan_cycle(target: str, target_id: int, cfg: dict):
         for cve in cves:
             fp = db.make_fingerprint(target, "cve", cve["cve_id"])
             is_new = db.upsert_finding(target_id, "cve", fp,
-                                        f"{cve['cve_id']} (CVSS {cve['score']} {cve['severity']})",
-                                        cve, cve["severity"])
+                                       f"{cve['cve_id']} (CVSS {cve['score']} {cve['severity']})",
+                                       cve, cve["severity"])
             if is_new:
                 new_count += 1
                 notifier.send_discord_alert(cfg["discord_webhook_url"], target, "CVE Match",
-                                             cve["severity"], cve["cve_id"], cve)
+                                           cve["severity"], cve["cve_id"], cve)
 
         # 6. ZoomEye — exposed services already indexed
         for zm in c.zoomeye_search(host, cfg["zoomeye_api_key"]):
             fp = db.make_fingerprint(target, "zoomeye_service", f"{zm.get('ip')}:{zm.get('port')}")
             is_new = db.upsert_finding(target_id, "zoomeye_service", fp,
-                                        f"ZoomEye: {zm.get('service')} on {zm.get('ip')}:{zm.get('port')}",
-                                        zm, "MEDIUM")
+                                       f"ZoomEye: {zm.get('service')} on {zm.get('ip')}:{zm.get('port')}",
+                                       zm, "MEDIUM")
             if is_new:
                 new_count += 1
                 notifier.send_discord_alert(cfg["discord_webhook_url"], target, "ZoomEye Exposure",
-                                             "MEDIUM", f"{zm.get('service')} on port {zm.get('port')}", zm)
+                                           "MEDIUM", f"{zm.get('service')} on port {zm.get('port')}", zm)
 
         db.mark_scanned(target_id)
         db.finish_scan_run(run_id, "SUCCESS", new_count)
@@ -181,7 +182,7 @@ def main():
     elif cmd == "list":
         for t in db.list_targets():
             print(f"[{t['id']}] {t['target']} — every {t['scan_interval_minutes']}min — "
-                  f"last scanned: {t['last_scanned_at'] or 'never'}")
+                  f"last scanned: {t['last_scenned_at'] or 'never'}")
     elif cmd == "remove":
         db.remove_target(int(sys.argv[2]))
         print("Deactivated.")
@@ -190,6 +191,11 @@ def main():
         db.add_target(target)
         targets = {t["target"]: t["id"] for t in db.list_targets()}
         run_scan_cycle(target, targets[target], load_config())
+    elif cmd == "run-all-once":
+        targets = db.list_targets(active_only=True)
+        cfg = load_config()
+        for t in targets:
+            run_scan_cycle(t["target"], t["id"], cfg)
     else:
         print(__doc__)
 
