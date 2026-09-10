@@ -2,8 +2,8 @@ name: MHZALY Autonomous SOC Scan
 
 on:
   schedule:
-    - cron: '*/30 * * * *'  # Har 30 minute baad automatic run hoga
-  workflow_dispatch:        # Aap khud bhi GitHub Actions tab se manual "Run workflow" daba sakte hain
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
 
 jobs:
   run-soc-scan:
@@ -22,12 +22,20 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      - name: Run Autonomous Scan Cycle
+      - name: Execute Single Scan Cycle
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           VIRUSTOTAL_API_KEY: ${{ secrets.VIRUSTOTAL_API_KEY }}
           ABUSEIPDB_API_KEY: ${{ secrets.ABUSEIPDB_API_KEY }}
           NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          ZOOMEYE_API_KEY: ${{ secrets.ZOOMEYE_API_KEY }}
         run: |
-          python3 scheduler.py run-once
+          python3 scheduler.py scan-once example.com
+
+      - name: Commit and Push Updated Database
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add *.db || true
+          git commit -m "Auto-update SOC scan database findings [skip ci]" || true
+          git push
