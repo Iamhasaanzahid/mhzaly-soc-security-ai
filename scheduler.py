@@ -16,6 +16,16 @@ Usage:
     python3 scheduler.py remove <id>            # deactivate a target
     python3 scheduler.py scan-once example.com  # run one scan cycle immediately (testing)
     python3 scheduler.py run-all-once           # run scan for all active targets in DB
+
+v2 changes:
+    - Fixed a crash bug in `list`: was reading t['last_scenned_at'] (typo),
+      the actual DB column is `last_scanned_at`.
+    - run_scan_cycle() now checks the target against connectors.assert_public_host()
+      once up front — if it resolves to an internal/reserved/metadata address,
+      the whole cycle is skipped and a warning is sent to Discord instead of
+      silently port-scanning or fetching your own internal network.
+    - nvd_search() calls now default to strict (CPE-confirmed) CVE matching,
+      since this path alerts unattended with no human review.
 """
 
 import sys
@@ -40,6 +50,7 @@ DEFAULT_CONFIG = {
     "zoomeye_api_key": "",
     "urlscan_api_key": "",
     "poll_interval_seconds": 60,
+    "strict_cve_matching": True,
 }
 
 
@@ -63,6 +74,19 @@ def run_scan_cycle(target: str, target_id: int, cfg: dict):
     new_count = 0
     run_id = db.start_scan_run(target_id)
     logger.info(f"Scanning {target} ...")
+
+    # SSRF / scope guard — check once up front so the whole cycle skips cleanly
+    # rather than each sub-call silently failing/blocking individually.
+    try:
+        c.assert_public_host(host)
+    except c.ScopeViolation as e:
+        db.finish_scan_run(run_id, "BLOCKED", 0, error=str(e))
+        logger.warning(f"Scan blocked for {target}: {e}")
+        notifier.send_discord_text(
+            cfg["discord_webhook_url"],
+            f"🚫 Scan blocked for `{target}`: resolves to a non-public address. Removing from active scope is recommended."
+        )
+        return
 
     try:
         # 1. DNS + ports + SSL + headers (deterministic, always run)
@@ -114,12 +138,14 @@ def run_scan_cycle(target: str, target_id: int, cfg: dict):
                                            "CRITICAL", f"{vt['malicious']} engines flagged malicious", vt)
 
         # 5. NVD — correlate against detected tech (kept simple: keyword = host's base name)
+        #    Strict/CPE-confirmed matching by default (see connectors.nvd_search docstring) —
+        #    this fires straight to Discord with no human review, so precision matters.
         keyword = host.split(".")[0]
-        cves = c.nvd_search(keyword, cfg["nvd_api_key"])
+        cves = c.nvd_search(keyword, cfg["nvd_api_key"], strict=cfg.get("strict_cve_matching", True))
         for cve in cves:
             fp = db.make_fingerprint(target, "cve", cve["cve_id"])
             is_new = db.upsert_finding(target_id, "cve", fp,
-                                       f"{cve['cve_id']} (CVSS {cve['score']} {cve['severity']})",
+                                       f"{cve['cve_id']} (CVSS {cve['score']} {cve['severity']}, match: {cve.get('match_confidence', 'keyword')})",
                                        cve, cve["severity"])
             if is_new:
                 new_count += 1
@@ -182,7 +208,7 @@ def main():
     elif cmd == "list":
         for t in db.list_targets():
             print(f"[{t['id']}] {t['target']} — every {t['scan_interval_minutes']}min — "
-                  f"last scanned: {t['last_scenned_at'] or 'never'}")
+                  f"last scanned: {t['last_scanned_at'] or 'never'}")
     elif cmd == "remove":
         db.remove_target(int(sys.argv[2]))
         print("Deactivated.")

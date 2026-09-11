@@ -16,21 +16,73 @@ APIs wired up here:
   - ZoomEye (Knownsec, China)     free tier, key required
   - urlscan.io (Norway)           free tier, key optional for search
   - ip-api.com                    free, NO key needed (geolocation/ISP)
+
+v2 changes:
+  - assert_public_host() SSRF guard before any direct socket/HTTP touch of the
+    target host (scan_ports, check_ssl, fuzz_endpoints). This runs unattended
+    24/7 against whatever's in the DB, so it's the thing most exposed if a bad
+    target ever gets added — internal IP, localhost, or cloud metadata address.
+  - with_retry() wraps flaky calls (timeouts/connection errors) with backoff.
+  - nvd_search() now does CPE-aware matching (same fix as app.py v18.0) and
+    defaults to strict/confirmed matches only, since this path alerts to
+    Discord with no human review before it fires.
 """
 
+import ipaddress
 import requests
 import socket
 import ssl
+import time
 import dns.resolver
 import urllib.parse
 import logging
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Callable
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 requests.packages.urllib3.disable_warnings()
 
-UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) MHZALY-SOC/1.0"
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) MHZALY-SOC/2.0"
+
+
+class ScopeViolation(Exception):
+    """Raised when a target resolves to a disallowed internal/metadata address."""
+    pass
+
+
+def assert_public_host(hostname: str) -> None:
+    """SSRF guard — see module docstring. Call before any direct connection to
+    a user/DB-supplied target host."""
+    try:
+        infos = socket.getaddrinfo(hostname, None)
+    except socket.gaierror as e:
+        raise ScopeViolation(f"Could not resolve host: {e}")
+
+    for family, _, _, _, sockaddr in infos:
+        ip_str = sockaddr[0]
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            continue
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            raise ScopeViolation(
+                f"Target '{hostname}' resolves to a non-public address ({ip_str}). "
+                f"Refusing to connect to internal/reserved network space."
+            )
+
+
+def with_retry(fn: Callable, *args, retries: int = 2, backoff: float = 1.5, **kwargs):
+    """Retry with exponential backoff for flaky/rate-limited HTTP calls."""
+    last_exc = None
+    for attempt in range(retries + 1):
+        try:
+            return fn(*args, **kwargs)
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            last_exc = e
+            if attempt < retries:
+                time.sleep(backoff ** attempt)
+    raise last_exc
 
 
 def clean_host(target: str) -> str:
@@ -38,6 +90,8 @@ def clean_host(target: str) -> str:
 
 
 # ── crt.sh — certificate transparency, free, no key ─────────────────────────
+# Note: this queries crt.sh's own index of the domain, not the target host
+# directly, so it isn't an SSRF vector — no guard needed here.
 
 def crtsh_subdomains(domain: str) -> List[str]:
     """Pulls subdomains seen in public SSL certs. Great for catching new
@@ -45,7 +99,7 @@ def crtsh_subdomains(domain: str) -> List[str]:
     host = clean_host(domain)
     found = set()
     try:
-        resp = requests.get(f"https://crt.sh/?q=%25.{host}&output=json", timeout=15)
+        resp = with_retry(requests.get, f"https://crt.sh/?q=%25.{host}&output=json", timeout=15)
         if resp.status_code == 200:
             for entry in resp.json():
                 for name in entry.get("name_value", "").split("\n"):
@@ -61,7 +115,7 @@ def crtsh_subdomains(domain: str) -> List[str]:
 
 def ip_geolocation(ip_or_host: str) -> Dict[str, Any]:
     try:
-        resp = requests.get(f"http://ip-api.com/json/{ip_or_host}", timeout=8)
+        resp = with_retry(requests.get, f"http://ip-api.com/json/{ip_or_host}", timeout=8)
         if resp.status_code == 200:
             data = resp.json()
             if data.get("status") == "success":
@@ -76,6 +130,7 @@ def ip_geolocation(ip_or_host: str) -> Dict[str, Any]:
 
 
 # ── ZoomEye — Chinese (Knownsec 404 team) exposed-service search ───────────
+# Queries ZoomEye's own index, not the target directly — no SSRF guard needed.
 
 def zoomeye_search(target: str, api_key: str) -> List[Dict[str, Any]]:
     """Free tier gives limited results/month. Returns exposed services/banners
@@ -86,7 +141,8 @@ def zoomeye_search(target: str, api_key: str) -> List[Dict[str, Any]]:
     host = clean_host(target)
     try:
         headers = {"API-KEY": api_key}
-        resp = requests.get(
+        resp = with_retry(
+            requests.get,
             f"https://api.zoomeye.org/host/search?query=hostname:{host}",
             headers=headers, timeout=15,
         )
@@ -106,6 +162,7 @@ def zoomeye_search(target: str, api_key: str) -> List[Dict[str, Any]]:
 
 
 # ── urlscan.io — Norway-based page scanning ─────────────────────────────────
+# Queries urlscan.io's own scan history — no SSRF guard needed.
 
 def urlscan_lookup(target: str, api_key: str = "") -> Dict[str, Any]:
     """Searches urlscan.io's existing scan history for this domain — flags if
@@ -113,7 +170,8 @@ def urlscan_lookup(target: str, api_key: str = "") -> Dict[str, Any]:
     host = clean_host(target)
     try:
         headers = {"API-Key": api_key} if api_key else {}
-        resp = requests.get(
+        resp = with_retry(
+            requests.get,
             f"https://urlscan.io/api/v1/search/?q=domain:{host}",
             headers=headers, timeout=15,
         )
@@ -133,7 +191,7 @@ def urlscan_lookup(target: str, api_key: str = "") -> Dict[str, Any]:
     return {}
 
 
-# ── Port scan + SSL + headers (deterministic, no API) ───────────────────────
+# ── Port scan + SSL + headers (deterministic, no API — direct-connect, guarded) ─
 
 COMMON_PORTS = [21, 22, 25, 53, 80, 110, 443, 445, 1433, 3306, 3389, 5432, 8080, 8443, 9200]
 PORT_NAMES = {21: "FTP", 22: "SSH", 25: "SMTP", 53: "DNS", 80: "HTTP", 110: "POP3",
@@ -143,6 +201,13 @@ PORT_NAMES = {21: "FTP", 22: "SSH", 25: "SMTP", 53: "DNS", 80: "HTTP", 110: "POP
 
 def scan_ports(host: str) -> List[Dict[str, Any]]:
     import concurrent.futures
+
+    try:
+        assert_public_host(host)
+    except ScopeViolation as e:
+        logger.warning(f"scan_ports blocked: {e}")
+        return []
+
     open_ports = []
 
     def check(port):
@@ -165,6 +230,11 @@ def scan_ports(host: str) -> List[Dict[str, Any]]:
 
 
 def check_ssl(host: str) -> Dict[str, Any]:
+    try:
+        assert_public_host(host)
+    except ScopeViolation as e:
+        return {"valid": False, "error": str(e)}
+
     try:
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
@@ -190,12 +260,40 @@ def check_dns(host: str) -> Dict[str, List[str]]:
     return out
 
 
-# ── NVD, VirusTotal, AbuseIPDB (as in the original suite) ───────────────────
+# ── NVD, VirusTotal, AbuseIPDB ───────────────────────────────────────────────
 
-def nvd_search(keyword: str, api_key: str = "", max_results: int = 8) -> List[Dict[str, Any]]:
+def _cpe_matches_keyword(cve_item: Dict[str, Any], keyword: str) -> bool:
+    """Checks the CVE's structured CPE match data for the keyword as an actual
+    vendor/product token, rather than trusting a raw description substring hit.
+    This is the fix for the false-positive class (e.g. 'React' matching
+    unrelated hardware CVEs) seen in earlier report runs."""
+    kw = keyword.lower().strip()
+    if not kw:
+        return False
+    for config in cve_item.get('configurations', []):
+        for node in config.get('nodes', []):
+            for match in node.get('cpeMatch', []):
+                criteria = match.get('criteria', '').lower()
+                parts = criteria.split(':')
+                if len(parts) > 4:
+                    vendor, product = parts[3], parts[4]
+                    if kw == vendor or kw == product or kw in product:
+                        return True
+    return False
+
+
+def nvd_search(keyword: str, api_key: str = "", max_results: int = 8,
+               strict: bool = True) -> List[Dict[str, Any]]:
+    """
+    strict=True (default): only return CVEs where the keyword is confirmed
+    against the CVE's own structured product/vendor data (CPE match). This
+    runs unattended and posts straight to Discord, so precision matters more
+    than recall here — set strict=False only for interactive/manual lookups.
+    """
     try:
         headers = {"apiKey": api_key} if api_key else {}
-        resp = requests.get(
+        resp = with_retry(
+            requests.get,
             "https://services.nvd.nist.gov/rest/json/cves/2.0",
             params={"keywordSearch": keyword, "resultsPerPage": max_results},
             headers=headers, timeout=15,
@@ -211,9 +309,14 @@ def nvd_search(keyword: str, api_key: str = "", max_results: int = 8) -> List[Di
                         d = metrics[key][0]["cvssData"]
                         score, severity = float(d.get("baseScore", 0)), d.get("baseSeverity", "UNKNOWN")
                         break
-                if score >= 4.0:
-                    out.append({"cve_id": cve.get("id"), "score": score, "severity": severity,
-                                "published": str(cve.get("published", ""))[:10]})
+                if score < 4.0:
+                    continue
+                confidence = "cpe" if _cpe_matches_keyword(cve, keyword) else "keyword"
+                if strict and confidence != "cpe":
+                    continue
+                out.append({"cve_id": cve.get("id"), "score": score, "severity": severity,
+                            "published": str(cve.get("published", ""))[:10],
+                            "match_confidence": confidence})
         return out
     except Exception as e:
         logger.warning(f"NVD error for {keyword}: {e}")
@@ -227,12 +330,14 @@ def virustotal_check(indicator: str, api_key: str) -> Dict[str, Any]:
         is_ip = bool(__import__("re").match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", indicator))
         url = (f"https://www.virustotal.com/api/v3/ip_addresses/{indicator}" if is_ip
                else f"https://www.virustotal.com/api/v3/domains/{indicator}")
-        resp = requests.get(url, headers={"x-apikey": api_key}, timeout=12)
+        resp = with_retry(requests.get, url, headers={"x-apikey": api_key}, timeout=12)
         if resp.status_code == 200:
             attrs = resp.json().get("data", {}).get("attributes", {})
             stats = attrs.get("last_analysis_stats", {})
             return {"malicious": stats.get("malicious", 0), "suspicious": stats.get("suspicious", 0),
                     "reputation": attrs.get("reputation", 0)}
+        elif resp.status_code == 429:
+            logger.warning("VirusTotal rate limit hit (429).")
     except Exception as e:
         logger.warning(f"VT error for {indicator}: {e}")
     return {}
@@ -243,18 +348,22 @@ def abuseipdb_check(ip: str, api_key: str) -> Dict[str, Any]:
         return {}
     try:
         headers = {"Key": api_key, "Accept": "application/json"}
-        resp = requests.get("https://api.abuseipdb.com/api/v2/check",
-                             headers=headers, params={"ipAddress": ip, "maxAgeInDays": 90}, timeout=10)
+        resp = with_retry(
+            requests.get, "https://api.abuseipdb.com/api/v2/check",
+            headers=headers, params={"ipAddress": ip, "maxAgeInDays": 90}, timeout=10,
+        )
         if resp.status_code == 200:
             d = resp.json().get("data", {})
             return {"score": d.get("abuseConfidenceScore", 0), "reports": d.get("totalReports", 0),
-                     "country": d.get("countryCode")}
+                    "country": d.get("countryCode")}
+        elif resp.status_code == 429:
+            logger.warning("AbuseIPDB rate limit hit (429).")
     except Exception as e:
         logger.warning(f"AbuseIPDB error for {ip}: {e}")
     return {}
 
 
-# ── Sensitive endpoint fuzzing (deterministic) ──────────────────────────────
+# ── Sensitive endpoint fuzzing (deterministic, direct-connect, guarded) ─────
 
 FUZZ_PATHS = ["/.env", "/.git/config", "/backup.zip", "/api/v1/users", "/swagger.json",
               "/config.json", "/.aws/credentials", "/wp-config.php.bak", "/.DS_Store",
@@ -262,12 +371,19 @@ FUZZ_PATHS = ["/.env", "/.git/config", "/backup.zip", "/api/v1/users", "/swagger
 
 
 def fuzz_endpoints(target_url: str) -> List[Dict[str, Any]]:
+    host = clean_host(target_url)
+    try:
+        assert_public_host(host)
+    except ScopeViolation as e:
+        logger.warning(f"fuzz_endpoints blocked: {e}")
+        return []
+
     found = []
     session = requests.Session()
     session.headers.update({"User-Agent": UA})
     for path in FUZZ_PATHS:
         try:
-            r = session.get(target_url.rstrip("/") + path, timeout=4, verify=False)
+            r = with_retry(session.get, target_url.rstrip("/") + path, timeout=4, verify=False, retries=1)
             if r.status_code in (200, 401, 403) and len(r.text) > 10:
                 low = r.text.lower()
                 if any(x in low for x in ["not found", "404", "does not exist"]):
