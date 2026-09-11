@@ -262,14 +262,31 @@ def check_dns(host: str) -> Dict[str, List[str]]:
 
 # ── NVD, VirusTotal, AbuseIPDB ───────────────────────────────────────────────
 
+# Known-ambiguous keywords -> the CPE vendor token(s) that actually own that
+# product name. A plain product-substring check isn't enough on its own: e.g.
+# ABB's own official CPE product string for an unrelated hardware line is
+# literally "wifi_logger_card_for_react", so "react" is a real token in a
+# vendor that isn't Facebook. Extend this as new false-positive classes turn up.
+CPE_VENDOR_ALLOWLIST = {
+    "react": {"facebook", "reactjs", "react_project"},
+    "express": {"expressjs", "openjs_foundation", "openjsf"},
+    "cloudflare": {"cloudflare"},
+    "django": {"djangoproject"},
+    "laravel": {"laravel"},
+    "wordpress": {"wordpress"},
+}
+
+
 def _cpe_matches_keyword(cve_item: Dict[str, Any], keyword: str) -> bool:
     """Checks the CVE's structured CPE match data for the keyword as an actual
-    vendor/product token, rather than trusting a raw description substring hit.
-    This is the fix for the false-positive class (e.g. 'React' matching
-    unrelated hardware CVEs) seen in earlier report runs."""
+    vendor/product token, rather than trusting a raw description substring
+    hit. For keywords known to be commonly-overloaded generic tech names,
+    additionally requires the CPE vendor field to match a known authoritative
+    vendor before calling it confirmed — see CPE_VENDOR_ALLOWLIST."""
     kw = keyword.lower().strip()
     if not kw:
         return False
+    allowed_vendors = CPE_VENDOR_ALLOWLIST.get(kw)
     for config in cve_item.get('configurations', []):
         for node in config.get('nodes', []):
             for match in node.get('cpeMatch', []):
@@ -277,8 +294,12 @@ def _cpe_matches_keyword(cve_item: Dict[str, Any], keyword: str) -> bool:
                 parts = criteria.split(':')
                 if len(parts) > 4:
                     vendor, product = parts[3], parts[4]
-                    if kw == vendor or kw == product or kw in product:
-                        return True
+                    if allowed_vendors is not None:
+                        if vendor in allowed_vendors and (kw == product or kw in product):
+                            return True
+                    else:
+                        if kw == vendor or kw == product or kw in product:
+                            return True
     return False
 
 

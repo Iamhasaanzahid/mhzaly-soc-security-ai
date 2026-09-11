@@ -391,25 +391,49 @@ class AutonomousAgentExecutor:
 
 class NVDIntelligenceClient:
     """
-    NVD client with CPE-aware relevance filtering. The v17.5 bug this fixes:
-    a plain keyword search for "React" matched CVEs for unrelated hardware
-    (ABB WiFi Logger) purely because "React" appeared inside an unrelated
-    product name in the CVE's own description. We now additionally check the
-    CVE's structured `configurations` (CPE match strings) for the keyword as
-    a distinct product/vendor token, and only mark a result 'cpe' (high)
-    confidence when it actually appears there — otherwise it's flagged
-    'keyword' (low) confidence so callers/report generators can filter or
-    down-weight it instead of presenting it as a confirmed match.
+    NVD client with CPE-aware relevance filtering.
+
+    v18.0 fix: a plain keyword search for "React" matched CVEs for unrelated
+    hardware (ABB WiFi Logger) purely because "React" appeared inside an
+    unrelated product's description text. We fixed that by checking the CVE's
+    structured `configurations` (CPE match strings) instead of description
+    text — but that surfaced a second, subtler problem: ABB's own official
+    CPE *product* string for that hardware is literally
+    "wifi_logger_card_for_react", so a plain substring check against the CPE
+    product field ALSO matches it — the word "react" is a real, present token
+    in an entirely unrelated vendor's official product name. Two different
+    things coincidentally share an exact word in NVD's own dictionary; no
+    amount of smarter string matching alone resolves that ambiguity.
+
+    v18.1 fix: for keywords known to be commonly-overloaded generic tech
+    names (a JS framework, a CDN, a webserver name that's also an English
+    word), we additionally require the CPE *vendor* field to match a known
+    authoritative vendor for that keyword before calling it 'cpe' confidence.
+    ABB is not Facebook, so this correctly reclassifies that hit back down to
+    'keyword' (unconfirmed) instead of a false 'cpe' (confirmed) match.
     """
+
+    # Known-ambiguous keywords -> the CPE vendor token(s) that actually own
+    # that product name. Extend this as new false-positive classes turn up.
+    VENDOR_ALLOWLIST = {
+        "react": {"facebook", "reactjs", "react_project"},
+        "express": {"expressjs", "openjs_foundation", "openjsf"},
+        "cloudflare": {"cloudflare"},
+        "django": {"djangoproject"},
+        "laravel": {"laravel"},
+        "wordpress": {"wordpress"},
+    }
+
     def __init__(self, nvd_key: str = ""):
         self.base_url = "https://services.nvd.nist.gov/rest/json/cves/2.0"
         self.nvd_key = nvd_key
 
-    @staticmethod
-    def _cpe_matches_keyword(cve_item: Dict[str, Any], keyword: str) -> bool:
+    @classmethod
+    def _cpe_matches_keyword(cls, cve_item: Dict[str, Any], keyword: str) -> bool:
         kw = keyword.lower().strip()
         if not kw:
             return False
+        allowed_vendors = cls.VENDOR_ALLOWLIST.get(kw)
         for config in cve_item.get('configurations', []):
             for node in config.get('nodes', []):
                 for match in node.get('cpeMatch', []):
@@ -418,8 +442,15 @@ class NVDIntelligenceClient:
                     parts = criteria.split(':')
                     if len(parts) > 4:
                         vendor, product = parts[3], parts[4]
-                        if kw == vendor or kw == product or kw in product:
-                            return True
+                        if allowed_vendors is not None:
+                            # Ambiguous keyword — the product string alone
+                            # isn't trustworthy; require the authoritative
+                            # vendor too.
+                            if vendor in allowed_vendors and (kw == product or kw in product):
+                                return True
+                        else:
+                            if kw == vendor or kw == product or kw in product:
+                                return True
         return False
 
     def search_cve(self, keyword: str, max_results: int = 15, min_confidence: str = "any") -> List[VulnerabilityRecord]:
@@ -923,7 +954,15 @@ def main():
                         domain_keyword = clean_target.split('.')[0] if '.' in clean_target else clean_target
 
                         tech_stack = agent_result.get('technologies', [])
-                        nvd_query_term = tech_stack[0] if tech_stack else domain_keyword
+                        # Generic client-side/CDN names are the most likely to
+                        # collide with an unrelated vendor's product string in
+                        # NVD's own CPE dictionary (see NVDIntelligenceClient
+                        # docstring) and rarely have meaningful CVEs of their
+                        # own anyway — prefer a more specific, less ambiguous
+                        # fingerprinted technology first if one was found.
+                        AMBIGUOUS_GENERIC_TECH = {"react", "express", "cloudflare"}
+                        specific_techs = [t for t in tech_stack if t.lower() not in AMBIGUOUS_GENERIC_TECH]
+                        nvd_query_term = specific_techs[0] if specific_techs else domain_keyword
 
                         nvd = NVDIntelligenceClient(nvd_key)
                         min_conf = "cpe" if strict_cve else "any"
