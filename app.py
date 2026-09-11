@@ -1,22 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MHZALY BUG BOUNTY & ENTERPRISE SECURITY PLATFORM v17.5 - MODERN SaaS EDITION
+MHZALY BUG BOUNTY & ENTERPRISE SECURITY PLATFORM v18.0 - HARDENED SaaS EDITION
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Comprehensive Purple Team Operations Suite (Red Team Recon + Blue Team SOC Automation)
-- Modern Dark Glassmorphism SaaS UI with Custom CSS, Glowing Accents & Sleek Cards
-- 100% Autonomous AI-Agent Pipeline with Soft-404 Filtering & Smart CVSS Thresholds
-- Fully Automated Enterprise Security Assessment Report Generator & Exporter (.md)
-- Dedicated Interactive AI Security Chatbot (Powered by Groq GPT-OSS 120B)
-- Separate Automated Sigma Rule & YARA Detection Generator Module
-- Autonomous Target Fingerprinting, Smart Endpoint Fuzzing & Log Parsing Simulator
-- NVD v2.0 REST Client with AI-Driven Dynamic Query Refinement & Safety Filters
-- Deep Live VirusTotal & AbuseIPDB Threat Intelligence Triage with Granular Safe Parsing
-- Advanced Network Recon: Real-time Multi-threaded Port Scanning, DNS, SSL & Headers Audit
-- Offensive/Defensive Payload Encoder, Decoder, Hasher & Custom Mutator Utility
-- Autonomous 24/7 SOC Background Scheduler & Live Database Dashboard Integration
-- SQLite Persistence & Audit Log History Tracking
-- Autonomous AI-Driven Agentic Recon & Self-Correction Loop (Human-in-the-Loop Command Center)
+Changes vs v17.5:
+- CPE-aware CVE correlation (kills the "React" false-positive class of match)
+- SSRF guard on every outbound recon/scan request (blocks private/link-local/metadata ranges)
+- Explicit authorization gate before any active scan runs
+- Hardened auth: constant-time password check, no insecure default creds, login lockout
+- Retry-with-backoff + lightweight response caching for VT/AbuseIPDB/NVD/Groq calls
+- AI report generation checks finish_reason and continues instead of silently truncating
+- Free-tier subdomain enumeration via crt.sh
+- Aggregate numeric risk score per target
+- JSON export alongside Markdown
 
 Author: Muhammad Hassaan Zahid
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -29,8 +26,11 @@ import numpy as np
 import json
 import sqlite3
 import logging
+import time
+import hmac
+import ipaddress
 from datetime import datetime
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Callable
 from dataclasses import dataclass, asdict
 import socket
 import ssl
@@ -56,6 +56,89 @@ logger = logging.getLogger(__name__)
 requests.packages.urllib3.disable_warnings()
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# 0. SAFETY: SSRF GUARD, RETRY HELPER, LIGHTWEIGHT CACHE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class ScopeViolation(Exception):
+    """Raised when a target resolves to a disallowed internal/metadata address."""
+    pass
+
+
+def assert_public_host(hostname: str) -> None:
+    """
+    SSRF guard. Resolves `hostname` and raises ScopeViolation if it lands on a
+    private, loopback, link-local, reserved, or cloud-metadata address.
+    Call this BEFORE making any outbound request or opening any socket to a
+    user-supplied target — this app runs as a hosted service, and without this
+    check a "domain" input of e.g. "169.254.169.254" or "localhost" would let a
+    user pivot the server into scanning its own internal network.
+    """
+    try:
+        infos = socket.getaddrinfo(hostname, None)
+    except socket.gaierror as e:
+        raise ScopeViolation(f"Could not resolve host: {e}")
+
+    for family, _, _, _, sockaddr in infos:
+        ip_str = sockaddr[0]
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            continue
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            raise ScopeViolation(
+                f"Target '{hostname}' resolves to a non-public address ({ip_str}). "
+                f"Refusing to scan internal/reserved network space."
+            )
+        # Explicit cloud metadata block (169.254.169.254 is link-local so it's
+        # already caught above, but keep this for clarity/defense-in-depth)
+        if ip_str == "169.254.169.254":
+            raise ScopeViolation("Refusing to scan the cloud metadata endpoint.")
+
+
+def with_retry(fn: Callable, *args, retries: int = 2, backoff: float = 1.5, **kwargs):
+    """Simple retry with exponential backoff for flaky/rate-limited HTTP calls."""
+    last_exc = None
+    for attempt in range(retries + 1):
+        try:
+            return fn(*args, **kwargs)
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            last_exc = e
+            if attempt < retries:
+                time.sleep(backoff ** attempt)
+    raise last_exc
+
+
+class TTLCache:
+    """
+    Minimal in-memory TTL cache so repeated lookups (e.g. re-rendering a
+    Streamlit page) don't burn free-tier VT/AbuseIPDB/NVD quota. Not persisted
+    across process restarts — that's fine for its purpose (burst dedup).
+    """
+    def __init__(self, ttl_seconds: int = 900):
+        self.ttl = ttl_seconds
+        self._store: Dict[str, Any] = {}
+
+    def get(self, key: str):
+        entry = self._store.get(key)
+        if not entry:
+            return None
+        value, expires_at = entry
+        if time.time() > expires_at:
+            self._store.pop(key, None)
+            return None
+        return value
+
+    def set(self, key: str, value: Any):
+        self._store[key] = (value, time.time() + self.ttl)
+
+
+@st.cache_resource
+def get_shared_cache() -> TTLCache:
+    return TTLCache(ttl_seconds=900)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # 1. DATA MODELS & SCHEMAS
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -70,13 +153,62 @@ class VulnerabilityRecord:
     affected_configurations: List[str]
     published_date: str
     remediation: str
+    match_confidence: str = "keyword"  # "cpe" (strong) or "keyword" (weak)
 
     def to_dict(self):
         return asdict(self)
 
+
+def compute_risk_score(vt_malicious: int, abuse_score: int, top_cvss: float) -> Dict[str, Any]:
+    """
+    Aggregate 0-100 risk score blending threat-intel reputation and worst CVE
+    severity found for the target's fingerprinted stack. This is a heuristic,
+    not a certified scoring methodology — surfaced as a triage aid only.
+    """
+    vt_component = min(vt_malicious * 8, 40)         # up to 40 pts
+    abuse_component = min(abuse_score * 0.3, 30)      # up to 30 pts
+    cvss_component = min((top_cvss / 10) * 30, 30)    # up to 30 pts
+    score = round(vt_component + abuse_component + cvss_component, 1)
+    if score >= 70:
+        band = "CRITICAL"
+    elif score >= 45:
+        band = "ELEVATED"
+    elif score >= 20:
+        band = "GUARDED"
+    else:
+        band = "LOW"
+    return {"score": score, "band": band}
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # 2. ENTERPRISE RECON, SOC & AI-AGENTIC INTELLIGENCE ENGINES
 # ═══════════════════════════════════════════════════════════════════════════════
+
+class SubdomainEnumEngine:
+    """Free-tier subdomain enumeration via crt.sh certificate transparency logs."""
+    @staticmethod
+    def enumerate(domain: str, limit: int = 50) -> List[str]:
+        clean = domain.replace('https://', '').replace('http://', '').split('/')[0]
+        try:
+            resp = with_retry(
+                requests.get,
+                f"https://crt.sh/?q=%25.{clean}&output=json",
+                timeout=12,
+            )
+            if resp.status_code != 200:
+                return []
+            data = resp.json()
+            names = set()
+            for entry in data:
+                for name in str(entry.get('name_value', '')).split('\n'):
+                    name = name.strip().lower()
+                    if name and '*' not in name and name.endswith(clean):
+                        names.add(name)
+            return sorted(names)[:limit]
+        except Exception as e:
+            logger.warning(f"crt.sh enumeration failed: {e}")
+            return []
+
 
 class BugBountyReconEngine:
     @staticmethod
@@ -88,7 +220,10 @@ class BugBountyReconEngine:
                 target_url = f"https://{target}"
             else:
                 target_url = target
-                
+
+            # SSRF guard — refuse to touch internal/reserved/metadata addresses
+            assert_public_host(clean_target)
+
             for rtype in ['A', 'AAAA', 'MX', 'TXT', 'NS', 'SOA']:
                 try:
                     answers = dns.resolver.resolve(clean_target, rtype)
@@ -97,16 +232,16 @@ class BugBountyReconEngine:
                     report['dns'][rtype] = []
 
             session = requests.Session()
-            session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) PurpleTeamHunter/17.5'})
-            
-            resp = session.get(target_url, timeout=8, verify=False, allow_redirects=True)
+            session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) PurpleTeamHunter/18.0'})
+
+            resp = with_retry(session.get, target_url, timeout=8, verify=False, allow_redirects=True)
             report['status_code'] = resp.status_code
             report['server'] = resp.headers.get('Server', 'Hidden / Unknown')
-            
+
             base_homepage_text = resp.text.lower()
             body = base_homepage_text
             headers_str = str(resp.headers).lower()
-            
+
             if 'wp-content' in body or 'wordpress' in headers_str:
                 report['technologies'].append('WordPress')
             if 'laravel' in headers_str or 'laravel_session' in str(resp.cookies):
@@ -119,19 +254,19 @@ class BugBountyReconEngine:
                 report['technologies'].append('Cloudflare')
             if 'django' in headers_str or 'csrftoken' in str(resp.cookies):
                 report['technologies'].append('Django')
-            
+
             report['technologies'] = list(set(report['technologies']))
 
             fuzz_paths = [
-                '/.env', '/robots.txt', '/sitemap.xml', '/git/config', 
+                '/.env', '/robots.txt', '/sitemap.xml', '/git/config',
                 '/backup.zip', '/api/v1/users', '/swagger.ui', '/phpinfo.php',
                 '/config.json', '/auth/login', '/graphql', '/debug', '/admin',
                 '/server-status', '/xmlrpc.php', '/package.json', '/composer.json',
                 '/api/v1/health', '/v2/swagger.json', '/metrics', '/actuator/env'
             ]
-            
+
             base_origin = f"{urllib.parse.urlparse(target_url).scheme}://{urllib.parse.urlparse(target_url).netloc}"
-            
+
             seen_paths = set()
             for path in fuzz_paths:
                 if path in seen_paths:
@@ -142,19 +277,22 @@ class BugBountyReconEngine:
                     p_resp = session.get(test_url, timeout=3, verify=False)
                     if p_resp.status_code in [200, 403, 401]:
                         p_text = p_resp.text.lower()
-                        
+
                         # Filter out Streamlit soft-404 pages
                         if 'streamlit' in p_text and 'root' in p_text and len(p_text) > 500:
                             if abs(len(p_text) - len(base_homepage_text)) < 200:
                                 continue
-                                
+
                         if p_resp.status_code == 200 and len(p_text) > 10:
                             if any(err in p_text for err in ["not found", "404 page", "does not exist", "object not found"]):
                                 continue
-                                
+
                         report['exposed_files'].append({'path': path, 'status': p_resp.status_code, 'size': len(p_resp.text)})
                 except Exception:
                     pass
+        except ScopeViolation as e:
+            report['error'] = f"Scope violation: {e}"
+            report['blocked'] = True
         except Exception as e:
             report['error'] = str(e)
         return report
@@ -163,18 +301,60 @@ class BugBountyReconEngine:
 class AutonomousAgentExecutor:
     """Autonomous AI-Driven Agentic Loop for deep target reconnaissance and vulnerability triage."""
     @staticmethod
+    def _call_groq(messages: List[Dict[str, str]], groq_key: str, max_tokens: int = 1600, temperature: float = 0.4) -> str:
+        """
+        Calls Groq chat completions and, if the model was cut off by the token
+        budget (finish_reason == 'length'), asks it to continue rather than
+        silently returning a truncated report.
+        """
+        headers = {'Authorization': f'Bearer {groq_key}', 'Content-Type': 'application/json'}
+        full_text = ""
+        convo = list(messages)
+        for _ in range(2):  # allow one continuation pass
+            payload = {
+                'model': 'openai/gpt-oss-120b',
+                'messages': convo,
+                'temperature': temperature,
+                'max_tokens': max_tokens,
+            }
+            resp = with_retry(requests.post, "https://api.groq.com/openai/v1/chat/completions",
+                               json=payload, headers=headers, timeout=30)
+            if resp.status_code != 200:
+                return full_text + f"\n[AI Agent LLM Error: {resp.status_code} - {resp.text[:300]}]"
+            choice = resp.json()['choices'][0]
+            chunk = choice['message']['content']
+            full_text += chunk
+            if choice.get('finish_reason') != 'length':
+                break
+            convo = convo + [
+                {'role': 'assistant', 'content': chunk},
+                {'role': 'user', 'content': 'Continue exactly where you left off, no repetition.'}
+            ]
+        return full_text
+
+    @staticmethod
     def run_agentic_cycle(target: str, groq_key: str) -> Dict[str, Any]:
         agent_log = []
         agent_log.append(f"[*] AI Agent initialized for autonomous target scope: {target}")
-        
+
         # Step 1: Deep Recon Execution
         recon_data = BugBountyReconEngine.deep_recon(target)
+        if recon_data.get('blocked'):
+            agent_log.append(f"[!] Recon blocked: {recon_data.get('error')}")
+            return {
+                'target': target, 'technologies': [], 'exposed_files': [],
+                'agent_log': agent_log, 'ai_analysis': "Scan blocked by scope guard.",
+                'blocked': True, 'block_reason': recon_data.get('error'),
+            }
         agent_log.append(f"[+] Recon complete. Status: {recon_data.get('status_code')}, Server: {recon_data.get('server')}")
-        
+
         technologies = recon_data.get('technologies', [])
         exposed = recon_data.get('exposed_files', [])
         agent_log.append(f"[+] Detected unique tech stack: {technologies}")
         agent_log.append(f"[+] Discovered valid exposed endpoints without duplicates: {len(exposed)}")
+
+        subdomains = SubdomainEnumEngine.enumerate(target)
+        agent_log.append(f"[+] Certificate-transparency subdomain enumeration found {len(subdomains)} host(s).")
 
         # Step 2: AI-Powered Context Evaluation & Authorized Security Analysis
         ai_analysis = "AI analysis skipped or key missing."
@@ -183,25 +363,18 @@ class AutonomousAgentExecutor:
             Target Scope: {target}
             Detected Technologies: {technologies}
             Exposed Sensitive Endpoints: {[e['path'] for e in exposed]}
-            Please perform an authorized technical risk assessment, architectural vulnerability triage, and provide professional security hardening guidelines for these findings.
+            Enumerated Subdomains (sample): {subdomains[:15]}
+            Please perform an authorized technical risk assessment, architectural vulnerability triage, and provide professional security hardening guidelines for these findings. Be specific to what was actually found — do not invent findings that weren't listed above.
             """
             try:
-                headers = {'Authorization': f'Bearer {groq_key}', 'Content-Type': 'application/json'}
-                payload = {
-                    'model': 'openai/gpt-oss-120b',
-                    'messages': [
-                        {'role': 'system', 'content': 'You are an authorized enterprise security engineer and bug bounty analyst performing authorized web application architecture assessment, vulnerability triage, and security hardening analysis. Provide comprehensive technical analysis, risk evaluations, and defensive remediation guidance.'},
+                ai_analysis = AutonomousAgentExecutor._call_groq(
+                    [
+                        {'role': 'system', 'content': 'You are an authorized enterprise security engineer and bug bounty analyst performing authorized web application architecture assessment, vulnerability triage, and security hardening analysis. Provide comprehensive technical analysis, risk evaluations, and defensive remediation guidance grounded only in the findings given to you.'},
                         {'role': 'user', 'content': prompt_context}
                     ],
-                    'temperature': 0.4,
-                    'max_tokens': 1200
-                }
-                resp = requests.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers, timeout=25)
-                if resp.status_code == 200:
-                    ai_analysis = resp.json()['choices'][0]['message']['content']
-                    agent_log.append("[+] AI Agent successfully generated deep security context and hardening recommendations.")
-                else:
-                    ai_analysis = f"AI Agent LLM Error: {resp.status_code} - {resp.text}"
+                    groq_key, max_tokens=1600,
+                )
+                agent_log.append("[+] AI Agent successfully generated deep security context and hardening recommendations.")
             except Exception as e:
                 ai_analysis = f"AI Agent connection exception: {e}"
 
@@ -209,17 +382,53 @@ class AutonomousAgentExecutor:
             'target': target,
             'technologies': technologies,
             'exposed_files': exposed,
+            'subdomains': subdomains,
             'agent_log': agent_log,
-            'ai_analysis': ai_analysis
+            'ai_analysis': ai_analysis,
+            'blocked': False,
         }
 
 
 class NVDIntelligenceClient:
+    """
+    NVD client with CPE-aware relevance filtering. The v17.5 bug this fixes:
+    a plain keyword search for "React" matched CVEs for unrelated hardware
+    (ABB WiFi Logger) purely because "React" appeared inside an unrelated
+    product name in the CVE's own description. We now additionally check the
+    CVE's structured `configurations` (CPE match strings) for the keyword as
+    a distinct product/vendor token, and only mark a result 'cpe' (high)
+    confidence when it actually appears there — otherwise it's flagged
+    'keyword' (low) confidence so callers/report generators can filter or
+    down-weight it instead of presenting it as a confirmed match.
+    """
     def __init__(self, nvd_key: str = ""):
         self.base_url = "https://services.nvd.nist.gov/rest/json/cves/2.0"
         self.nvd_key = nvd_key
 
-    def search_cve(self, keyword: str, max_results: int = 15) -> List[VulnerabilityRecord]:
+    @staticmethod
+    def _cpe_matches_keyword(cve_item: Dict[str, Any], keyword: str) -> bool:
+        kw = keyword.lower().strip()
+        if not kw:
+            return False
+        for config in cve_item.get('configurations', []):
+            for node in config.get('nodes', []):
+                for match in node.get('cpeMatch', []):
+                    criteria = match.get('criteria', '').lower()
+                    # CPE format: cpe:2.3:a:vendor:product:version:...
+                    parts = criteria.split(':')
+                    if len(parts) > 4:
+                        vendor, product = parts[3], parts[4]
+                        if kw == vendor or kw == product or kw in product:
+                            return True
+        return False
+
+    def search_cve(self, keyword: str, max_results: int = 15, min_confidence: str = "any") -> List[VulnerabilityRecord]:
+        """
+        min_confidence: "any" keeps both cpe+keyword matches (default, matches
+        old behavior for exploratory search); "cpe" restricts to structurally
+        confirmed product matches — use this for autonomous/unattended reports
+        where false positives are costly.
+        """
         vulnerabilities = []
         seen_cves = set()
         try:
@@ -227,26 +436,26 @@ class NVDIntelligenceClient:
             headers = {}
             if self.nvd_key:
                 headers['apiKey'] = self.nvd_key
-                
-            response = requests.get(self.base_url, params=params, headers=headers, timeout=12)
+
+            response = with_retry(requests.get, self.base_url, params=params, headers=headers, timeout=12)
             if response.status_code == 200:
                 data = response.json()
                 for item in data.get('vulnerabilities', []):
                     cve = item.get('cve', {})
                     cve_id = cve.get('id', 'UNKNOWN')
-                    
+
                     if cve_id in seen_cves:
                         continue
                     seen_cves.add(cve_id)
-                    
+
                     descriptions = cve.get('descriptions', [])
                     desc = descriptions[0].get('value', 'No description.') if descriptions else 'No description.'
-                    
+
                     score = 0.0
                     severity = "UNKNOWN"
                     vector = "N/A"
                     metrics = cve.get('metrics', {})
-                    
+
                     if 'cvssMetricV31' in metrics and metrics['cvssMetricV31']:
                         cvss_data = metrics['cvssMetricV31'][0].get('cvssData', {})
                         score = float(cvss_data.get('baseScore', 0.0))
@@ -257,37 +466,52 @@ class NVDIntelligenceClient:
                         score = float(cvss_data.get('baseScore', 0.0))
                         severity = cvss_data.get('baseSeverity', 'UNKNOWN')
                         vector = cvss_data.get('vectorString', 'N/A')
-                        
-                    if score >= 4.0:
-                        vulnerabilities.append(VulnerabilityRecord(
-                            cve_id=cve_id,
-                            title=cve_id,
-                            description=desc,
-                            severity=severity.upper(),
-                            cvss_score=score,
-                            vector_string=vector,
-                            affected_configurations=[keyword],
-                            published_date=str(cve.get('published', ''))[:10],
-                            remediation=f"Apply official vendor patch or configure WAF signature to mitigate {cve_id}."
-                        ))
+
+                    if score < 4.0:
+                        continue
+
+                    confidence = "cpe" if self._cpe_matches_keyword(cve, keyword) else "keyword"
+                    if min_confidence == "cpe" and confidence != "cpe":
+                        continue
+
+                    vulnerabilities.append(VulnerabilityRecord(
+                        cve_id=cve_id,
+                        title=cve_id,
+                        description=desc,
+                        severity=severity.upper(),
+                        cvss_score=score,
+                        vector_string=vector,
+                        affected_configurations=[keyword],
+                        published_date=str(cve.get('published', ''))[:10],
+                        remediation=f"Apply official vendor patch or configure WAF signature to mitigate {cve_id}.",
+                        match_confidence=confidence,
+                    ))
         except Exception as e:
             logger.error(f"NVD API Error: {e}")
         return vulnerabilities
 
+
 class ThreatIntelService:
-    def __init__(self, vt_key: str, abuse_key: str):
+    def __init__(self, vt_key: str, abuse_key: str, cache: Optional[TTLCache] = None):
         self.vt_key = vt_key
         self.abuse_key = abuse_key
+        self.cache = cache
 
     def triage_indicator(self, indicator: str) -> Dict[str, Any]:
+        cache_key = f"triage:{indicator}"
+        if self.cache:
+            cached = self.cache.get(cache_key)
+            if cached:
+                return cached
+
         results = {
-            'indicator': indicator, 
-            'vt_raw': None, 
+            'indicator': indicator,
+            'vt_raw': None,
             'vt_summary': {'malicious': 0, 'suspicious': 0, 'harmless': 0, 'undetected': 0, 'reputation': 0, 'tags': [], 'registrar': 'N/A'},
             'abuse_raw': None,
             'abuse_summary': {'score': 0, 'reports': 0, 'country': 'N/A', 'isp': 'N/A', 'lastReported': 'N/A'}
         }
-        
+
         try:
             is_ip = bool(re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', indicator))
             is_url = indicator.startswith(('http://', 'https://'))
@@ -301,14 +525,14 @@ class ThreatIntelService:
                         url = f"https://www.virustotal.com/api/v3/ip_addresses/{indicator}"
                     else:
                         url = f"https://www.virustotal.com/api/v3/domains/{indicator}"
-                    
-                    resp = requests.get(url, headers=headers, timeout=10)
+
+                    resp = with_retry(requests.get, url, headers=headers, timeout=10)
                     if resp.status_code == 200:
                         vt_json = resp.json()
                         results['vt_raw'] = vt_json
                         attrs = vt_json.get('data', {}).get('attributes', {})
                         stats = attrs.get('last_analysis_stats', {})
-                        
+
                         results['vt_summary']['malicious'] = int(stats.get('malicious', 0))
                         results['vt_summary']['suspicious'] = int(stats.get('suspicious', 0))
                         results['vt_summary']['harmless'] = int(stats.get('harmless', 0))
@@ -316,6 +540,8 @@ class ThreatIntelService:
                         results['vt_summary']['reputation'] = int(attrs.get('reputation', 0))
                         results['vt_summary']['tags'] = list(set(attrs.get('tags', [])))
                         results['vt_summary']['registrar'] = attrs.get('registrar', attrs.get('as_owner', 'N/A'))
+                    elif resp.status_code == 429:
+                        results['vt_summary']['error'] = "VT rate limit hit (429) — try again shortly."
                     else:
                         results['vt_summary']['error'] = f"VT HTTP Status: {resp.status_code}"
                 except Exception as e:
@@ -325,25 +551,31 @@ class ThreatIntelService:
                 try:
                     headers = {'Key': self.abuse_key, 'Accept': 'application/json'}
                     params = {'ipAddress': indicator, 'maxAgeInDays': 90, 'verbose': True}
-                    resp = requests.get("https://api.abuseipdb.com/api/v2/check", headers=headers, params=params, timeout=10)
+                    resp = with_retry(requests.get, "https://api.abuseipdb.com/api/v2/check",
+                                       headers=headers, params=params, timeout=10)
                     if resp.status_code == 200:
                         abuse_json = resp.json()
                         results['abuse_raw'] = abuse_json
                         data = abuse_json.get('data', {})
-                        
+
                         results['abuse_summary']['score'] = int(data.get('abuseConfidenceScore', 0))
                         results['abuse_summary']['reports'] = int(data.get('totalReports', 0))
                         results['abuse_summary']['country'] = str(data.get('countryCode', 'N/A'))
                         results['abuse_summary']['isp'] = str(data.get('isp', 'N/A'))
                         results['abuse_summary']['lastReported'] = str(data.get('lastReportedAt', 'Never'))
+                    elif resp.status_code == 429:
+                        results['abuse_summary']['error'] = "AbuseIPDB rate limit hit (429) — try again shortly."
                     else:
                         results['abuse_summary']['error'] = f"AbuseIPDB Status: {resp.status_code}"
                 except Exception as e:
                     results['abuse_summary']['error'] = str(e)
         except Exception as e:
             logger.error(f"ThreatIntel error: {e}")
-            
+
+        if self.cache:
+            self.cache.set(cache_key, results)
         return results
+
 
 class AdvancedReconEngine:
     @staticmethod
@@ -351,6 +583,10 @@ class AdvancedReconEngine:
         report = {'dns': {}, 'ports': [], 'ssl': {'valid': False}, 'headers': {}}
         try:
             clean_domain = domain.replace('https://', '').replace('http://', '').split('/')[0]
+
+            # SSRF guard — refuse to port-scan/connect to internal/reserved addresses
+            assert_public_host(clean_domain)
+
             for rtype in ['A', 'AAAA', 'MX', 'TXT', 'NS', 'SOA']:
                 try:
                     answers = dns.resolver.resolve(clean_domain, rtype)
@@ -361,7 +597,7 @@ class AdvancedReconEngine:
             common_ports = [21, 22, 25, 53, 80, 110, 443, 445, 1433, 3306, 3389, 5432, 8080, 8443, 9200]
             open_ports = []
             seen_ports = set()
-            
+
             def scan_port(port):
                 if port in seen_ports:
                     return None
@@ -411,19 +647,37 @@ class AdvancedReconEngine:
                 report['ssl']['error'] = str(e)
 
             try:
-                resp = requests.get(f"https://{clean_domain}", timeout=5, verify=False)
+                resp = with_retry(requests.get, f"https://{clean_domain}", timeout=5, verify=False)
                 target_headers = ['Strict-Transport-Security', 'Content-Security-Policy', 'X-Frame-Options', 'X-Content-Type-Options', 'X-XSS-Protection']
                 for h in target_headers:
                     report['headers'][h] = resp.headers.get(h, 'MISSING')
             except Exception as e:
                 report['headers']['error'] = str(e)
+        except ScopeViolation as e:
+            report['error'] = f"Scope violation: {e}"
+            report['blocked'] = True
         except Exception as e:
             logger.error(f"Audit error: {e}")
+            report['error'] = str(e)
         return report
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 3. STREAMLIT ENTERPRISE UI (MODERN SaaS CSS & PURPLE TEAM HUB)
 # ═══════════════════════════════════════════════════════════════════════════════
+
+def authorization_gate(key_suffix: str) -> bool:
+    """
+    Renders a mandatory authorization checkbox before any active scan module
+    runs. Doesn't verify legal authorization (can't), but forces the operator
+    to explicitly attest to it every time — standard practice for bug-bounty
+    tooling and a paper trail if the platform is ever misused.
+    """
+    return st.checkbox(
+        "I confirm I am authorized to test this target (owner, bug-bounty program scope, or written permission).",
+        key=f"authz_{key_suffix}",
+    )
+
 
 def render_autonomous_tab():
     """Renders the Autonomous SOC live monitoring tab from dashboard_tab.py logic."""
@@ -442,18 +696,20 @@ def render_autonomous_tab():
             new_target = st.text_input("Domain or IP", key="new_auto_target")
         with col2:
             interval = st.number_input("Scan every (min)", min_value=5, value=60, key="new_auto_interval")
-            
-        if st.button("Add & Scan Target Now", use_container_width=True):
+
+        authorized = authorization_gate("add_target")
+
+        if st.button("Add & Scan Target Now", use_container_width=True, disabled=not authorized):
             if new_target:
                 ok = db.add_target(new_target, int(interval))
                 if ok:
                     st.success(f"Added {new_target} to database.")
-                    
+
                     with st.spinner(f"Running live autonomous security scan on {new_target}..."):
                         try:
                             targets_list = db.list_targets()
                             target_id = next((t['id'] for t in targets_list if t['target'] == new_target), None)
-                            
+
                             if target_id:
                                 cfg = {
                                     "discord_webhook_url": st.secrets.get("DISCORD_WEBHOOK_URL", ""),
@@ -469,6 +725,8 @@ def render_autonomous_tab():
                             st.error(f"Target added, but live scan encountered an issue: {e}")
                 else:
                     st.warning("Already being monitored.")
+        elif not authorized:
+            st.caption("Check the authorization box above to enable scanning.")
 
     targets = db.list_targets()
     st.markdown("### Monitored Targets")
@@ -479,7 +737,7 @@ def render_autonomous_tab():
         with st.form(key="deactivate_form"):
             remove_id = st.number_input("Target ID to Delete", min_value=0, value=0, step=1, key="deactivate_target_id_input")
             submit_delete = st.form_submit_button("Delete Target Permanently")
-            
+
             if submit_delete:
                 if remove_id > 0:
                     db.remove_target(int(remove_id))
@@ -522,87 +780,27 @@ def main():
     # Modern SaaS Dark Glassmorphism Styling Injection
     st.markdown("""
         <style>
-        /* Main background & typography */
-        .stApp {
-            background-color: #0b0f19;
-            color: #f3f4f6;
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-        }
-        
-        /* Sidebar styling */
-        [data-testid="stSidebar"] {
-            background-color: #111827;
-            border-right: 1px solid #1f2937;
-        }
-        
-        /* Glassmorphism Cards */
-        .saas-card {
-            background: rgba(17, 24, 39, 0.7);
-            border: 1px solid rgba(75, 85, 99, 0.3);
-            border-radius: 12px;
-            padding: 20px;
-            backdrop-filter: blur(12px);
-            margin-bottom: 16px;
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
-        }
-        
-        /* Custom Buttons */
-        .stButton>button {
-            background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
-            color: white;
-            border: none;
-            border-radius: 8px;
-            font-weight: 600;
-            padding: 0.5rem 1rem;
-            transition: all 0.3s ease;
-            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
-        }
-        .stButton>button:hover {
-            background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%);
-            box-shadow: 0 6px 16px rgba(59, 130, 246, 0.5);
-            transform: translateY(-1px);
-        }
-        
-        /* Metric Cards Customization */
-        [data-testid="stMetric"] {
-            background: rgba(17, 24, 39, 0.8);
-            border: 1px solid rgba(59, 130, 246, 0.2);
-            padding: 16px;
-            border-radius: 10px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
-        }
-        [data-testid="stMetricLabel"] {
-            color: #9ca3af !important;
-            font-weight: 500;
-        }
-        [data-testid="stMetricValue"] {
-            color: #60a5fa !important;
-            font-weight: 700;
-        }
-        
-        /* Inputs & Textareas */
-        .stTextInput>div>div>input, .stTextArea>div>div>textarea {
-            background-color: #1f2937;
-            color: #f3f4f6;
-            border: 1px solid #374151;
-            border-radius: 8px;
-        }
-        .stTextInput>div>div>input:focus, .stTextArea>div>div>textarea:focus {
-            border-color: #3b82f6;
-            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
-        }
-        
-        /* Headers styling */
-        h1, h2, h3 {
-            color: #f9fafb;
-            font-weight: 700;
-            letter-spacing: -0.025em;
-        }
+        .stApp { background-color: #0b0f19; color: #f3f4f6; font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; }
+        [data-testid="stSidebar"] { background-color: #111827; border-right: 1px solid #1f2937; }
+        .saas-card { background: rgba(17, 24, 39, 0.7); border: 1px solid rgba(75, 85, 99, 0.3); border-radius: 12px; padding: 20px; backdrop-filter: blur(12px); margin-bottom: 16px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4); }
+        .stButton>button { background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%); color: white; border: none; border-radius: 8px; font-weight: 600; padding: 0.5rem 1rem; transition: all 0.3s ease; box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3); }
+        .stButton>button:hover { background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%); box-shadow: 0 6px 16px rgba(59, 130, 246, 0.5); transform: translateY(-1px); }
+        .stButton>button:disabled { opacity: 0.4; box-shadow: none; transform: none; }
+        [data-testid="stMetric"] { background: rgba(17, 24, 39, 0.8); border: 1px solid rgba(59, 130, 246, 0.2); padding: 16px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.3); }
+        [data-testid="stMetricLabel"] { color: #9ca3af !important; font-weight: 500; }
+        [data-testid="stMetricValue"] { color: #60a5fa !important; font-weight: 700; }
+        .stTextInput>div>div>input, .stTextArea>div>div>textarea { background-color: #1f2937; color: #f3f4f6; border: 1px solid #374151; border-radius: 8px; }
+        .stTextInput>div>div>input:focus, .stTextArea>div>div>textarea:focus { border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2); }
+        h1, h2, h3 { color: #f9fafb; font-weight: 700; letter-spacing: -0.025em; }
         </style>
     """, unsafe_allow_html=True)
 
     if 'authenticated' not in st.session_state:
         st.session_state.authenticated = False
+    if 'login_attempts' not in st.session_state:
+        st.session_state.login_attempts = 0
+    if 'login_locked_until' not in st.session_state:
+        st.session_state.login_locked_until = 0.0
 
     if not st.session_state.authenticated:
         col1, col2, col3 = st.columns([1, 1.2, 1])
@@ -614,28 +812,52 @@ def main():
                     <p style="color: #9ca3af;">Enterprise Purple Team Operations Suite</p>
                 </div>
             """, unsafe_allow_html=True)
-            
+
+            correct_user = st.secrets.get("APP_USERNAME", None)
+            correct_pass = st.secrets.get("APP_PASSWORD", None)
+            if not correct_user or not correct_pass:
+                st.error(
+                    "APP_USERNAME / APP_PASSWORD are not set in Streamlit secrets. "
+                    "Refusing to fall back to a default credential — set both secrets to enable login."
+                )
+                return
+
+            now = time.time()
+            if now < st.session_state.login_locked_until:
+                remaining = int(st.session_state.login_locked_until - now)
+                st.warning(f"Too many failed attempts. Try again in {remaining}s.")
+                return
+
             username = st.text_input("Operator Username")
             password = st.text_input("Operator Password", type="password")
-            
+
             if st.button("Authenticate Suite", use_container_width=True):
-                correct_user = st.secrets.get("APP_USERNAME", "admin")
-                correct_pass = st.secrets.get("APP_PASSWORD", "admin123")
-                if username == correct_user and password == correct_pass:
+                # Constant-time comparison to avoid timing side-channels on the password check
+                user_ok = hmac.compare_digest(username, correct_user)
+                pass_ok = hmac.compare_digest(password, correct_pass)
+                if user_ok and pass_ok:
                     st.session_state.authenticated = True
                     st.session_state.user = username
+                    st.session_state.login_attempts = 0
                     st.success("Authentication successful. Initializing SaaS modules...")
                     st.rerun()
                 else:
-                    st.error("Authentication failed: Invalid credentials.")
+                    st.session_state.login_attempts += 1
+                    if st.session_state.login_attempts >= 5:
+                        st.session_state.login_locked_until = time.time() + 60
+                        st.session_state.login_attempts = 0
+                        st.error("Too many failed attempts. Locked for 60 seconds.")
+                    else:
+                        st.error("Authentication failed: Invalid credentials.")
         return
 
     vt_key = st.secrets.get("VIRUSTOTAL_API_KEY", "")
     abuse_key = st.secrets.get("ABUSEIPDB_API_KEY", "")
     groq_key = st.secrets.get("GROQ_API_KEY", "")
     nvd_key = st.secrets.get("NVD_API_KEY", "")
-    
-    local_db = db 
+    shared_cache = get_shared_cache()
+
+    local_db = db
 
     with st.sidebar:
         st.markdown(f"### Operator: `{st.session_state.user}`")
@@ -666,7 +888,7 @@ def main():
     if module == "Command Telemetry Center":
         st.markdown("# Purple Team Operations Center")
         st.markdown("<p style='color: #9ca3af;'>Aggregated telemetry across offensive recon and defensive SOC monitoring.</p>", unsafe_allow_html=True)
-        
+
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Threat Level", "ELEVATED", "Orange")
         c2.metric("NVD API Key", "Accelerated" if nvd_key else "Standard", "NIST v2.0")
@@ -681,50 +903,83 @@ def main():
         st.markdown("<p style='color: #9ca3af;'>Give target scope. The Autonomous AI Agent takes complete control, performing deep iterative recon, filtering duplicate endpoints/CVEs, executing analysis, and synthesizing professional security assessment reports.</p>", unsafe_allow_html=True)
 
         pipeline_target = st.text_input("Target Domain, IP Address, or Keyword", placeholder="e.g., target-domain.com or 8.8.8.8")
+        strict_cve = st.checkbox("Strict CVE matching (CPE-confirmed only — fewer false positives)", value=True)
+        authorized = authorization_gate("pipeline")
 
-        if st.button("Launch Autonomous AI Agent Loop", use_container_width=True):
+        if st.button("Launch Autonomous AI Agent Loop", use_container_width=True, disabled=not authorized):
             if pipeline_target:
                 with st.spinner("Autonomous AI Agent taking full control: running deep recon and deduplication loops..."):
                     local_db.init_db()
-                    
-                    # Run Autonomous Agent Loop & Threat Triage
+
                     agent_result = AutonomousAgentExecutor.run_agentic_cycle(pipeline_target, groq_key)
-                    ti = ThreatIntelService(vt_key, abuse_key)
-                    ti_res = ti.triage_indicator(pipeline_target)
 
-                    clean_target = pipeline_target.replace('https://', '').replace('http://', '').split('/')[0]
-                    domain_keyword = clean_target.split('.')[0] if '.' in clean_target else clean_target
-                    
-                    tech_stack = agent_result.get('technologies', [])
-                    nvd_query_term = tech_stack[0] if tech_stack else domain_keyword
+                    if agent_result.get('blocked'):
+                        st.error(f"Scan blocked by scope guard: {agent_result.get('block_reason')}")
+                    else:
+                        ti = ThreatIntelService(vt_key, abuse_key, cache=shared_cache)
+                        ti_res = ti.triage_indicator(pipeline_target)
 
-                    nvd = NVDIntelligenceClient(nvd_key)
-                    cve_res = nvd.search_cve(nvd_query_term, max_results=8)
-                    if not cve_res and domain_keyword != nvd_query_term:
-                        cve_res = nvd.search_cve(domain_keyword, max_results=8)
+                        clean_target = pipeline_target.replace('https://', '').replace('http://', '').split('/')[0]
+                        domain_keyword = clean_target.split('.')[0] if '.' in clean_target else clean_target
 
-                    st.success("Autonomous AI Agent execution cycle successfully completed.")
+                        tech_stack = agent_result.get('technologies', [])
+                        nvd_query_term = tech_stack[0] if tech_stack else domain_keyword
 
-                    c1, c2, c3 = st.columns(3)
-                    c1.metric("VT Malicious Detections", ti_res['vt_summary']['malicious'])
-                    c2.metric("Abuse Confidence Score", f"{ti_res['abuse_summary']['score']}%")
-                    c3.metric("Deduplicated Unique CVEs", len(cve_res))
+                        nvd = NVDIntelligenceClient(nvd_key)
+                        min_conf = "cpe" if strict_cve else "any"
+                        cve_res = nvd.search_cve(nvd_query_term, max_results=8, min_confidence=min_conf)
+                        if not cve_res and domain_keyword != nvd_query_term:
+                            cve_res = nvd.search_cve(domain_keyword, max_results=8, min_confidence=min_conf)
 
-                    with st.expander("🤖 View Live Autonomous Agent Execution Logs"):
-                        for log_line in agent_result.get('agent_log', []):
-                            st.code(log_line)
+                        st.success("Autonomous AI Agent execution cycle successfully completed.")
 
-                    ai_analysis_text = agent_result.get('ai_analysis', "AI analysis skipped.")
+                        top_cvss = max([v.cvss_score for v in cve_res], default=0.0)
+                        risk = compute_risk_score(ti_res['vt_summary']['malicious'], ti_res['abuse_summary']['score'], top_cvss)
 
-                    cve_list_md = "\n".join([f"- **{c.cve_id}** (CVSS: {c.cvss_score} - {c.severity}): {c.description}" for c in cve_res]) if cve_res else "No high-severity matching CVE entries found."
-                    exposed_md = "\n".join([f"- Endpoint: `{ef['path']}` | Status: `{ef['status']}`" for ef in agent_result.get('exposed_files', [])]) if agent_result.get('exposed_files') else "No sensitive endpoints exposed on standard fuzz paths."
-                    tech_md = ", ".join(tech_stack) if tech_stack else "Custom / Undetected"
+                        c1, c2, c3, c4 = st.columns(4)
+                        c1.metric("VT Malicious Detections", ti_res['vt_summary']['malicious'])
+                        c2.metric("Abuse Confidence Score", f"{ti_res['abuse_summary']['score']}%")
+                        c3.metric("Deduplicated Unique CVEs", len(cve_res))
+                        c4.metric("Aggregate Risk Score", f"{risk['score']}/100", risk['band'])
 
-                    auto_report_markdown = f"""# MHZALY AUTONOMOUS AI AGENT SECURITY ASSESSMENT REPORT
+                        with st.expander("🤖 View Live Autonomous Agent Execution Logs"):
+                            for log_line in agent_result.get('agent_log', []):
+                                st.code(log_line)
+
+                        subdomains = agent_result.get('subdomains', [])
+                        if subdomains:
+                            with st.expander(f"🌐 Enumerated Subdomains ({len(subdomains)})"):
+                                st.dataframe(pd.DataFrame({'subdomain': subdomains}), use_container_width=True)
+
+                        ai_analysis_text = agent_result.get('ai_analysis', "AI analysis skipped.")
+
+                        cve_list_md = "\n".join([
+                            f"- **{v.cve_id}** (CVSS: {v.cvss_score} - {v.severity}, match: {v.match_confidence}): {v.description}"
+                            for v in cve_res
+                        ]) if cve_res else "No high-severity matching CVE entries found."
+                        exposed_md = "\n".join([f"- Endpoint: `{ef['path']}` | Status: `{ef['status']}`" for ef in agent_result.get('exposed_files', [])]) if agent_result.get('exposed_files') else "No sensitive endpoints exposed on standard fuzz paths."
+                        subdomain_md = "\n".join([f"- `{s}`" for s in subdomains[:30]]) if subdomains else "None discovered via certificate transparency logs."
+                        tech_md = ", ".join(tech_stack) if tech_stack else "Custom / Undetected"
+
+                        report_data = {
+                            "target": pipeline_target,
+                            "operator": st.session_state.user,
+                            "timestamp": datetime.now().isoformat(),
+                            "risk_score": risk,
+                            "threat_intel": ti_res['vt_summary'] | {"abuse": ti_res['abuse_summary']},
+                            "technologies": tech_stack,
+                            "exposed_files": agent_result.get('exposed_files', []),
+                            "subdomains": subdomains,
+                            "cves": [v.to_dict() for v in cve_res],
+                            "ai_analysis": ai_analysis_text,
+                        }
+
+                        auto_report_markdown = f"""# MHZALY AUTONOMOUS AI AGENT SECURITY ASSESSMENT REPORT
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 * **Target Scope:** `{pipeline_target}`
 * **Lead Operator:** `{st.session_state.user} (Autonomous AI Agent Engine)`
 * **Timestamp:** `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`
+* **Aggregate Risk Score:** `{risk['score']}/100 ({risk['band']})`
 * **Classification:** FULLY AUTOMATED RED/BLUE AGENTIC INTELLIGENCE
 
 ## 1. Executive Summary & Autonomous Recon Overview
@@ -748,7 +1003,11 @@ Autonomous AI Agent intelligence gathering was completed against `{pipeline_targ
 - **Clean Discovered Endpoints & Files (No Duplicates):**
 {exposed_md}
 
+### Enumerated Subdomains (Certificate Transparency)
+{subdomain_md}
+
 ## 4. Correlated Unique Vulnerabilities (NIST NVD v2.0 - Deduplicated CVSS >= 4.0)
+_Match confidence: **cpe** = confirmed against the CVE's structured product data; **keyword** = description-text hit only, verify manually._
 {cve_list_md}
 
 ## 5. Autonomous AI Agent Deep Architectural Analysis & Hardening Recommendations
@@ -758,19 +1017,31 @@ Autonomous AI Agent intelligence gathering was completed against `{pipeline_targ
 *Generated via MHZALY Autonomous AI Bug Bounty Platform*
 """
 
-                    st.markdown("---")
-                    st.markdown("### Generated Autonomous Agent Report Preview")
-                    st.markdown(auto_report_markdown)
+                        st.markdown("---")
+                        st.markdown("### Generated Autonomous Agent Report Preview")
+                        st.markdown(auto_report_markdown)
 
-                    st.download_button(
-                        label="Download Full Autonomous AI Security Report (.md)",
-                        data=auto_report_markdown,
-                        file_name=f"mhzaly_autonomous_agent_report_{pipeline_target.replace('/', '_')}.md",
-                        mime="text/markdown",
-                        use_container_width=True
-                    )
+                        dl1, dl2 = st.columns(2)
+                        with dl1:
+                            st.download_button(
+                                label="Download Report (.md)",
+                                data=auto_report_markdown,
+                                file_name=f"mhzaly_autonomous_agent_report_{pipeline_target.replace('/', '_')}.md",
+                                mime="text/markdown",
+                                use_container_width=True
+                            )
+                        with dl2:
+                            st.download_button(
+                                label="Download Report (.json)",
+                                data=json.dumps(report_data, indent=2, default=str),
+                                file_name=f"mhzaly_autonomous_agent_report_{pipeline_target.replace('/', '_')}.json",
+                                mime="application/json",
+                                use_container_width=True
+                            )
             else:
                 st.warning("Please specify a target for the autonomous agent.")
+        elif not authorized:
+            st.caption("Check the authorization box above to enable scanning.")
 
     elif module == "AI Security Chatbot":
         st.markdown("# AI Security Operations & Bug Bounty Chatbot")
@@ -797,21 +1068,13 @@ Autonomous AI Agent intelligence gathering was completed against `{pipeline_targ
                 else:
                     with st.spinner("Analyzing via Groq AI..."):
                         try:
-                            headers = {'Authorization': f'Bearer {groq_key}', 'Content-Type': 'application/json'}
-                            payload = {
-                                'model': 'openai/gpt-oss-120b',
-                                'messages': [
+                            response_text = AutonomousAgentExecutor._call_groq(
+                                [
                                     {'role': 'system', 'content': 'You are an elite Cybersecurity Expert, Purple Team Mentor, and Red/Blue Team Advisor specializing in security assessments.'},
-                                    *[ {'role': m['role'], 'content': m['content']} for m in st.session_state.messages ]
+                                    *[{'role': m['role'], 'content': m['content']} for m in st.session_state.messages]
                                 ],
-                                'temperature': 0.6,
-                                'max_tokens': 1500
-                            }
-                            resp = requests.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers, timeout=25)
-                            if resp.status_code == 200:
-                                response_text = resp.json()['choices'][0]['message']['content']
-                            else:
-                                response_text = f"API Error Code: {resp.status_code} - {resp.text}"
+                                groq_key, max_tokens=1500, temperature=0.6,
+                            )
                         except Exception as e:
                             response_text = f"Connection failed: {e}"
                     st.markdown(response_text)
@@ -820,14 +1083,14 @@ Autonomous AI Agent intelligence gathering was completed against `{pipeline_targ
     elif module == "Blue Team SOC Log & SIEM Simulator":
         st.markdown("# Blue Team SOC Log Parsing & Threat Detection Simulator")
         st.markdown("<p style='color: #9ca3af;'>Paste raw server access logs or Windows Event logs below to simulate SIEM parsing and anomaly detection.</p>", unsafe_allow_html=True)
-        
+
         sample_log = st.text_area("Raw Log Data Input", placeholder="Paste Apache/Nginx access log or Windows Event ID log lines here...", height=150)
-        
+
         if st.button("Analyze Logs & Detect Anomalies", use_container_width=True):
             if sample_log:
                 with st.spinner("Running heuristic parsing and threat detection..."):
                     st.success("Log parsing complete.")
-                    
+
                     lines = [l.strip() for l in sample_log.split('\n') if l.strip()]
                     seen_logs = set()
                     unique_lines = []
@@ -843,11 +1106,11 @@ Autonomous AI Agent intelligence gathering was completed against `{pipeline_targ
                             suspicious_hits.append({'line_no': idx, 'content': line, 'indicator': 'Injection / Exploit Pattern'})
                         elif '404' in line or '403' in line:
                             suspicious_hits.append({'line_no': idx, 'content': line, 'indicator': 'Unauthorized / Failed Request'})
-                            
+
                     c1, c2 = st.columns(2)
                     c1.metric("Unique Log Lines Analyzed", len(unique_lines))
                     c2.metric("Detected Anomalies / Hits", len(suspicious_hits))
-                    
+
                     if suspicious_hits:
                         st.markdown("### Detected Security Anomalies")
                         st.dataframe(pd.DataFrame(suspicious_hits), use_container_width=True)
@@ -859,7 +1122,7 @@ Autonomous AI Agent intelligence gathering was completed against `{pipeline_targ
     elif module == "Automated Sigma Rule Generator":
         st.markdown("# Automated Sigma Rule & YARA Detection Generator")
         st.markdown("<p style='color: #9ca3af;'>Generate production-ready SIEM detection rules for any CVE, IoC, or attack pattern using Groq AI.</p>", unsafe_allow_html=True)
-        
+
         cve_input = st.text_input("Enter CVE ID or Attack Description", placeholder="e.g., CVE-2021-44228 or Path Traversal Attack")
         if st.button("Generate Sigma Detection Rule", use_container_width=True):
             if cve_input:
@@ -868,22 +1131,14 @@ Autonomous AI Agent intelligence gathering was completed against `{pipeline_targ
                 else:
                     with st.spinner("Generating professional Sigma detection rule via Groq AI..."):
                         try:
-                            headers = {'Authorization': f'Bearer {groq_key}', 'Content-Type': 'application/json'}
-                            payload = {
-                                'model': 'openai/gpt-oss-120b',
-                                'messages': [
+                            sigma_res = AutonomousAgentExecutor._call_groq(
+                                [
                                     {'role': 'system', 'content': 'You are a senior Blue Team threat hunter. Generate a valid, production-ready Sigma detection rule in YAML format for the requested vulnerability or threat vector.'},
                                     {'role': 'user', 'content': f"Generate a Sigma rule for: {cve_input}"}
                                 ],
-                                'temperature': 0.3,
-                                'max_tokens': 1000
-                            }
-                            resp = requests.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers, timeout=25)
-                            if resp.status_code == 200:
-                                sigma_res = resp.json()['choices'][0]['message']['content']
-                                st.code(sigma_res, language='yaml')
-                            else:
-                                st.error(f"API Error: {resp.status_code}")
+                                groq_key, max_tokens=1000, temperature=0.3,
+                            )
+                            st.code(sigma_res, language='yaml')
                         except Exception as e:
                             st.error(f"Error: {e}")
             else:
@@ -892,98 +1147,122 @@ Autonomous AI Agent intelligence gathering was completed against `{pipeline_targ
     elif module == "Bug Bounty Recon & Fuzzing":
         st.markdown("# Target Reconnaissance & Sensitive Endpoint Fuzzing")
         target_input = st.text_input("Target URL or Domain", placeholder="e.g., target-domain.com")
-        
-        if st.button("Launch Recon & Asset Discovery", use_container_width=True):
+        include_subdomains = st.checkbox("Also enumerate subdomains (crt.sh)", value=True)
+        authorized = authorization_gate("recon")
+
+        if st.button("Launch Recon & Asset Discovery", use_container_width=True, disabled=not authorized):
             if target_input:
                 with st.spinner(f"Executing deep offensive reconnaissance on {target_input}..."):
                     recon = BugBountyReconEngine.deep_recon(target_input)
-                    st.success("Reconnaissance cycle complete.")
-                    
-                    c1, c2, c3 = st.columns(3)
-                    c1.metric("HTTP Status", recon.get('status_code', 'N/A'))
-                    c2.metric("Web Server Banner", recon.get('server', 'N/A'))
-                    c3.metric("Exposed Endpoints", len(recon.get('exposed_files', [])))
-                    
-                    st.markdown("### Authoritative DNS Records")
-                    for rtype, recs in recon.get('dns', {}).items():
-                        if recs:
-                            st.markdown(f"**{rtype} Records:**")
-                            for r in recs:
-                                st.code(r)
-                                
-                    st.markdown("### Fingerprinted Technology Stack")
-                    techs = recon.get('technologies', [])
-                    if techs:
-                        for t in techs:
-                            st.markdown(f"- `{t}`")
-                    else:
-                        st.info("No prominent framework signatures found.")
-                        
-                    st.markdown("### Exposed Sensitive Endpoints & Backup Files")
-                    exposed = recon.get('exposed_files', [])
-                    if exposed:
-                        st.dataframe(pd.DataFrame(exposed), use_container_width=True)
-                    else:
-                        st.info("No common sensitive files discovered on standard paths.")
-            else:
-                st.warning("Please specify a target domain or URL.")
 
-    elif module == "Network Infrastructure Audit":
-        st.markdown("# Purple Team Infrastructure Reconnaissance & Audit")
-        target_domain = st.text_input("Target Domain or IP Address", placeholder="e.g., scanme.nmap.org")
-        
-        if st.button("Execute Full Infrastructure Audit", use_container_width=True):
-            if target_domain:
-                with st.spinner(f"Executing live infrastructure audit against {target_domain}..."):
-                    audit_data = AdvancedReconEngine.audit_infrastructure(target_domain)
-                    st.success("Infrastructure Audit Completed Successfully.")
+                    if recon.get('blocked'):
+                        st.error(f"Scan blocked by scope guard: {recon.get('error')}")
+                    else:
+                        st.success("Reconnaissance cycle complete.")
 
-                    tab1, tab2, tab3, tab4 = st.tabs(["DNS Records", "Port Scan", "SSL / TLS", "Security Headers"])
-                    
-                    with tab1:
-                        for rtype, recs in audit_data['dns'].items():
+                        c1, c2, c3 = st.columns(3)
+                        c1.metric("HTTP Status", recon.get('status_code', 'N/A'))
+                        c2.metric("Web Server Banner", recon.get('server', 'N/A'))
+                        c3.metric("Exposed Endpoints", len(recon.get('exposed_files', [])))
+
+                        st.markdown("### Authoritative DNS Records")
+                        for rtype, recs in recon.get('dns', {}).items():
                             if recs:
                                 st.markdown(f"**{rtype} Records:**")
                                 for r in recs:
                                     st.code(r)
-                    with tab2:
-                        ports = audit_data['ports']
-                        if ports:
-                            st.dataframe(pd.DataFrame(ports), use_container_width=True)
+
+                        st.markdown("### Fingerprinted Technology Stack")
+                        techs = recon.get('technologies', [])
+                        if techs:
+                            for t in techs:
+                                st.markdown(f"- `{t}`")
                         else:
-                            st.info("No open ports found on scanned standard ports.")
-                    with tab3:
-                        ssl_res = audit_data['ssl']
-                        if ssl_res.get('valid'):
-                            st.success("Valid SSL/TLS Certificate Deployed.")
-                            st.json(ssl_res['details'])
+                            st.info("No prominent framework signatures found.")
+
+                        st.markdown("### Exposed Sensitive Endpoints & Backup Files")
+                        exposed = recon.get('exposed_files', [])
+                        if exposed:
+                            st.dataframe(pd.DataFrame(exposed), use_container_width=True)
                         else:
-                            st.warning(f"SSL Issue: {ssl_res.get('error', 'Unknown')}")
-                    with tab4:
-                        headers = audit_data['headers']
-                        if 'error' in headers:
-                            st.error(f"Error: {headers['error']}")
-                        else:
-                            for h_name, h_val in headers.items():
-                                icon = "❌" if h_val == 'MISSING' else "✅"
-                                st.write(f"{icon} **{h_name}:** `{h_val}`")
+                            st.info("No common sensitive files discovered on standard paths.")
+
+                        if include_subdomains:
+                            st.markdown("### Enumerated Subdomains (Certificate Transparency)")
+                            subs = SubdomainEnumEngine.enumerate(target_input)
+                            if subs:
+                                st.dataframe(pd.DataFrame({'subdomain': subs}), use_container_width=True)
+                            else:
+                                st.info("No subdomains found via crt.sh.")
+            else:
+                st.warning("Please specify a target domain or URL.")
+        elif not authorized:
+            st.caption("Check the authorization box above to enable scanning.")
+
+    elif module == "Network Infrastructure Audit":
+        st.markdown("# Purple Team Infrastructure Reconnaissance & Audit")
+        target_domain = st.text_input("Target Domain or IP Address", placeholder="e.g., scanme.nmap.org")
+        authorized = authorization_gate("audit")
+
+        if st.button("Execute Full Infrastructure Audit", use_container_width=True, disabled=not authorized):
+            if target_domain:
+                with st.spinner(f"Executing live infrastructure audit against {target_domain}..."):
+                    audit_data = AdvancedReconEngine.audit_infrastructure(target_domain)
+
+                    if audit_data.get('blocked'):
+                        st.error(f"Scan blocked by scope guard: {audit_data.get('error')}")
+                    else:
+                        st.success("Infrastructure Audit Completed Successfully.")
+
+                        tab1, tab2, tab3, tab4 = st.tabs(["DNS Records", "Port Scan", "SSL / TLS", "Security Headers"])
+
+                        with tab1:
+                            for rtype, recs in audit_data['dns'].items():
+                                if recs:
+                                    st.markdown(f"**{rtype} Records:**")
+                                    for r in recs:
+                                        st.code(r)
+                        with tab2:
+                            ports = audit_data['ports']
+                            if ports:
+                                st.dataframe(pd.DataFrame(ports), use_container_width=True)
+                            else:
+                                st.info("No open ports found on scanned standard ports.")
+                        with tab3:
+                            ssl_res = audit_data['ssl']
+                            if ssl_res.get('valid'):
+                                st.success("Valid SSL/TLS Certificate Deployed.")
+                                st.json(ssl_res['details'])
+                            else:
+                                st.warning(f"SSL Issue: {ssl_res.get('error', 'Unknown')}")
+                        with tab4:
+                            headers = audit_data['headers']
+                            if 'error' in headers:
+                                st.error(f"Error: {headers['error']}")
+                            else:
+                                for h_name, h_val in headers.items():
+                                    icon = "❌" if h_val == 'MISSING' else "✅"
+                                    st.write(f"{icon} **{h_name}:** `{h_val}`")
             else:
                 st.warning("Please provide a valid target host.")
+        elif not authorized:
+            st.caption("Check the authorization box above to enable scanning.")
 
     elif module == "Enterprise NVD Intelligence":
         st.markdown("# Enterprise NVD Vulnerability Intelligence")
         keyword = st.text_input("Search Software / Vendor / CVE", placeholder="e.g., apache, wordpress plugin, cve-2024")
-        
+        strict_cve = st.checkbox("Strict CVE matching (CPE-confirmed only)", value=False)
+
         if st.button("Query NVD Database", use_container_width=True):
             if keyword:
                 with st.spinner("Fetching CVE telemetry from NIST NVD..."):
                     client = NVDIntelligenceClient(nvd_key)
-                    vulns = client.search_cve(keyword)
-                    
+                    vulns = client.search_cve(keyword, min_confidence="cpe" if strict_cve else "any")
+
                     if vulns:
                         st.success(f"Retrieved {len(vulns)} unique CVE records.")
                         for v in vulns:
-                            with st.expander(f"{v.cve_id} | Severity: {v.severity} | CVSS: {v.cvss_score}"):
+                            with st.expander(f"{v.cve_id} | Severity: {v.severity} | CVSS: {v.cvss_score} | Match: {v.match_confidence}"):
                                 st.markdown(f"**Published:** {v.published_date}")
                                 st.markdown(f"**Vector:** `{v.vector_string}`")
                                 st.write(v.description)
@@ -996,19 +1275,19 @@ Autonomous AI Agent intelligence gathering was completed against `{pipeline_targ
     elif module == "Threat Intel & IOC Triage":
         st.markdown("# Live Threat Intelligence & IOC Triage")
         st.markdown("<p style='color: #9ca3af;'>Analyze IP addresses, domains, or URLs against VirusTotal and AbuseIPDB feeds with granular parsing.</p>", unsafe_allow_html=True)
-        
+
         indicator = st.text_input("Enter Indicator (IP Address, Domain, or URL)", placeholder="e.g., 8.8.8.8 or example.com")
-        
+
         if st.button("Run Threat Triage Analysis", use_container_width=True):
             if indicator:
                 with st.spinner(f"Querying threat intelligence feeds for `{indicator}`..."):
-                    ti = ThreatIntelService(vt_key, abuse_key)
+                    ti = ThreatIntelService(vt_key, abuse_key, cache=shared_cache)
                     report = ti.triage_indicator(indicator)
                     st.success("Triage Analysis Complete.")
-                    
+
                     st.markdown("---")
                     col_vt, col_abuse = st.columns(2)
-                    
+
                     with col_vt:
                         st.subheader("VirusTotal Security Telemetry")
                         vt_sum = report['vt_summary']
@@ -1018,16 +1297,16 @@ Autonomous AI Agent intelligence gathering was completed against `{pipeline_targ
                             m_count = vt_sum['malicious']
                             s_count = vt_sum['suspicious']
                             h_count = vt_sum['harmless']
-                            
+
                             st.metric("Malicious Detections", m_count, delta="Threat Flag" if m_count > 0 else "Clean", delta_color="inverse" if m_count > 0 else "normal")
                             st.metric("Suspicious Flags", s_count)
                             st.metric("Harmless Engines", h_count)
                             st.metric("Community Reputation Score", vt_sum['reputation'])
                             st.write(f"**Owner / Registrar / ASN:** `{vt_sum['registrar']}`")
-                            
+
                             with st.expander("View Full VirusTotal Raw JSON"):
                                 st.json(report['vt_raw'])
-                                
+
                     with col_abuse:
                         st.subheader("AbuseIPDB Reputation Telemetry")
                         abuse_sum = report['abuse_summary']
@@ -1038,13 +1317,13 @@ Autonomous AI Agent intelligence gathering was completed against `{pipeline_targ
                         else:
                             score = abuse_sum['score']
                             reports = abuse_sum['reports']
-                            
+
                             st.metric("Abuse Confidence Score", f"{score}%", delta="High Risk" if score > 50 else "Low Risk", delta_color="inverse" if score > 50 else "normal")
                             st.metric("Total Abuse Reports", reports)
                             st.write(f"**Country Location:** `{abuse_sum['country']}`")
                             st.write(f"**ISP / Network:** `{abuse_sum['isp']}`")
                             st.write(f"**Last Reported:** `{abuse_sum['lastReported']}`")
-                            
+
                             with st.expander("View Full AbuseIPDB Raw JSON"):
                                 st.json(report['abuse_raw'])
             else:
@@ -1053,7 +1332,7 @@ Autonomous AI Agent intelligence gathering was completed against `{pipeline_targ
     elif module == "Offensive Encoder & Hasher":
         st.markdown("# Payload Encoder, Decoder & Hasher")
         input_text = st.text_input("Input String / Payload", placeholder="Enter text to encode, decode, or hash...")
-        
+
         col_enc1, col_enc2 = st.columns(2)
         with col_enc1:
             if st.button("Base64 Encode", use_container_width=True):
@@ -1095,6 +1374,7 @@ Autonomous AI Agent intelligence gathering was completed against `{pipeline_targ
         st.write(f"**AbuseIPDB API:** {'Active' if abuse_key else 'Missing'}")
         st.write(f"**Groq AI Agent Engine:** {'Active (openai/gpt-oss-120b)' if groq_key else 'Missing'}")
         st.write("**SQLite Shared Database (`mhzaly_soc.db`):** Initialized")
+        st.write(f"**Auth Credentials Configured:** {'Yes' if st.secrets.get('APP_USERNAME') and st.secrets.get('APP_PASSWORD') else 'No — set APP_USERNAME/APP_PASSWORD in secrets'}")
 
 if __name__ == "__main__":
     main()
