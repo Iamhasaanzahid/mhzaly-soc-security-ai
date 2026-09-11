@@ -29,6 +29,7 @@ v2 changes:
 """
 
 import sys
+import os
 import time
 import json
 import logging
@@ -53,18 +54,47 @@ DEFAULT_CONFIG = {
     "strict_cve_matching": True,
 }
 
+# Maps config.json keys to the environment variable that overrides them.
+# This is what makes GitHub Actions (or any CI/systemd setup that injects
+# secrets as env vars rather than a committed config.json) actually work —
+# without this, load_config() only ever reads the file and silently runs
+# with every API key blank, since nobody wants real secrets committed to git.
+ENV_OVERRIDES = {
+    "discord_webhook_url": "DISCORD_WEBHOOK_URL",
+    "nvd_api_key": "NVD_API_KEY",
+    "virustotal_api_key": "VIRUSTOTAL_API_KEY",
+    "abuseipdb_api_key": "ABUSEIPDB_API_KEY",
+    "zoomeye_api_key": "ZOOMEYE_API_KEY",
+    "urlscan_api_key": "URLSCAN_API_KEY",
+}
+
 
 def load_config() -> dict:
     try:
         with open(CONFIG_PATH) as f:
             cfg = json.load(f)
         merged = {**DEFAULT_CONFIG, **cfg}
-        return merged
     except FileNotFoundError:
         with open(CONFIG_PATH, "w") as f:
             json.dump(DEFAULT_CONFIG, f, indent=2)
-        logger.warning(f"Created blank {CONFIG_PATH} — fill in your API keys and webhook URL.")
-        return DEFAULT_CONFIG
+        logger.warning(f"Created blank {CONFIG_PATH} — fill in your API keys and webhook URL, "
+                        f"or set the matching environment variables instead.")
+        merged = dict(DEFAULT_CONFIG)
+
+    # Environment variables win over config.json when both are present, so a
+    # CI runner with no (or a blank) config.json still picks up secrets.
+    for cfg_key, env_key in ENV_OVERRIDES.items():
+        env_val = os.environ.get(env_key)
+        if env_val:
+            merged[cfg_key] = env_val
+
+    missing = [env_key for cfg_key, env_key in ENV_OVERRIDES.items()
+               if not merged.get(cfg_key) and cfg_key != "urlscan_api_key"]
+    if missing:
+        logger.warning(f"Running with no value set for: {', '.join(missing)} "
+                        f"(checked config.json and environment) — those checks will be skipped.")
+
+    return merged
 
 
 def run_scan_cycle(target: str, target_id: int, cfg: dict):
