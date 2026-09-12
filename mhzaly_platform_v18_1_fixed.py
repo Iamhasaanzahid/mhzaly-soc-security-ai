@@ -205,6 +205,119 @@ RISKY_PUBLIC_PORTS = {3389, 3306, 1433, 5432, 9200, 445, 21}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# 0b. PRODUCTION-READINESS: INPUT VALIDATION, SESSION TIMEOUT, SCAN QUOTAS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Loose but real host/URL validator: rejects empty/whitespace-only garbage,
+# control characters, obviously-malformed input, and anything absurdly long
+# before it ever reaches a socket call, DNS resolver, or outbound HTTP
+# request. This is a UX/sanity gate, NOT a security boundary by itself —
+# assert_public_host() remains the actual SSRF guard and still runs
+# regardless of what passes here.
+_HOSTNAME_RE = re.compile(
+    r'^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$'
+)
+_IPV4_RE = re.compile(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$')
+
+
+def validate_target_input(raw_target: str, allow_url: bool = True) -> Optional[str]:
+    """
+    Validates a user-supplied target (domain, IP, or URL) before it is passed
+    to any recon/scan engine. Returns an error message string if invalid,
+    or None if the input looks acceptable. Deliberately permissive on valid
+    shapes (doesn't try to be a full RFC validator) but catches the classes
+    of input that would otherwise blow up downstream with a confusing stack
+    trace or silently no-op: empty input, embedded whitespace/newlines
+    (header/command injection smell), excessive length, and strings that are
+    neither a plausible hostname, IPv4 address, nor http(s) URL.
+    """
+    if raw_target is None:
+        return "Target is required."
+    target = raw_target.strip()
+    if not target:
+        return "Target cannot be empty."
+    if len(target) > 253:
+        return "Target is too long to be a valid hostname/URL."
+    if any(ch.isspace() for ch in target) or '\x00' in target:
+        return "Target must not contain whitespace or control characters."
+
+    if allow_url and target.startswith(('http://', 'https://')):
+        parsed = urllib.parse.urlparse(target)
+        if not parsed.netloc:
+            return "URL is malformed — missing host."
+        host = parsed.hostname or ''
+        if _IPV4_RE.match(host) or _HOSTNAME_RE.match(host) or host == 'localhost':
+            return None
+        return "URL host does not look like a valid domain or IP."
+
+    clean = target.split('/')[0]
+    if _IPV4_RE.match(clean):
+        octets = clean.split('.')
+        if all(0 <= int(o) <= 255 for o in octets):
+            return None
+        return "IP address octets must be between 0 and 255."
+    if _HOSTNAME_RE.match(clean):
+        return None
+    return ("Target must be a valid domain (example.com), IPv4 address, "
+            "or http(s) URL.")
+
+
+# Default session inactivity timeout and per-operator daily active-scan
+# quota. Both are overridable via Streamlit secrets so an operator can tune
+# them per deployment without a code change. The quota counter is
+# process-local (in-memory) and resets on app restart — it's a courtesy
+# guard against accidentally hammering free-tier VT/AbuseIPDB/NVD/Groq quota
+# or a target, not a hard security control. For a durable, cross-restart
+# quota, back this with the `db` module's SQLite store instead.
+DEFAULT_SESSION_TIMEOUT_MINUTES = 30
+DEFAULT_MAX_ACTIVE_SCANS_PER_DAY = 100
+
+
+def enforce_session_timeout(timeout_minutes: int) -> bool:
+    """
+    Logs the operator out if they've been idle longer than timeout_minutes.
+    Call once near the top of main() after authentication is confirmed.
+    Returns True if the session is still valid, False if it just expired
+    (caller should stop rendering the rest of the authenticated UI).
+    """
+    now = time.time()
+    last_activity = st.session_state.get('last_activity_ts', now)
+    if now - last_activity > timeout_minutes * 60:
+        st.session_state.authenticated = False
+        st.warning(f"Session expired after {timeout_minutes} minutes of inactivity. Please log in again.")
+        st.rerun()
+        return False
+    st.session_state['last_activity_ts'] = now
+    return True
+
+
+def check_and_increment_scan_quota(operator: str, max_per_day: int) -> Optional[str]:
+    """
+    Lightweight per-operator, per-day active-scan counter to slow down
+    accidental quota-burning loops (e.g. someone mashing 'Launch' in a
+    while-loop-style testing session) against VT/AbuseIPDB/NVD/Groq or
+    against the target itself. Returns an error message if the operator is
+    over quota (in which case the caller should NOT run the scan and should
+    NOT count it), or None if the scan is allowed (in which case the count
+    has already been incremented).
+    """
+    today = datetime.now().strftime('%Y-%m-%d')
+    quota_key = 'scan_quota'
+    quota_state = st.session_state.get(quota_key, {})
+    day_state = quota_state.get(operator, {'date': today, 'count': 0})
+    if day_state['date'] != today:
+        day_state = {'date': today, 'count': 0}
+    if day_state['count'] >= max_per_day:
+        return (f"Daily active-scan quota reached ({max_per_day}/day) for operator "
+                f"`{operator}`. This resets at midnight, or raise "
+                f"MAX_ACTIVE_SCANS_PER_DAY in secrets.")
+    day_state['count'] += 1
+    quota_state[operator] = day_state
+    st.session_state[quota_key] = quota_state
+    return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # 2. ENTERPRISE RECON, SOC & AI-AGENTIC INTELLIGENCE ENGINES
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -499,12 +612,18 @@ class NVDIntelligenceClient:
         seen_cves = set()
         try:
             params = {'keywordSearch': keyword, 'resultsPerPage': min(max_results, 30)}
-            headers = {}
+            headers = {'User-Agent': 'MHZALY-Purple-Team-Suite/18.1 (+authorized-security-tooling)'}
             if self.nvd_key:
                 headers['apiKey'] = self.nvd_key
 
             response = with_retry(requests.get, self.base_url, params=params, headers=headers, timeout=12)
-            if response.status_code == 200:
+            if response.status_code in (403, 429):
+                # NVD's unauthenticated tier returns 403 almost as often as
+                # 429 once you're rate-limited — treat both as "back off",
+                # not as a hard/permanent error, so callers can retry later
+                # instead of assuming the keyword search itself is invalid.
+                logger.warning(f"NVD rate limit/forbidden ({response.status_code}) for keyword '{keyword}'.")
+            elif response.status_code == 200:
                 data = response.json()
                 for item in data.get('vulnerabilities', []):
                     cve = item.get('cve', {})
@@ -766,7 +885,10 @@ def render_autonomous_tab():
         authorized = authorization_gate("add_target")
 
         if st.button("Add & Scan Target Now", use_container_width=True, disabled=not authorized):
-            if new_target:
+            validation_error = validate_target_input(new_target) if new_target else "Please enter a domain or IP to monitor."
+            if validation_error:
+                st.warning(validation_error)
+            else:
                 ok = db.add_target(new_target, int(interval))
                 if ok:
                     st.success(f"Added {new_target} to database.")
@@ -917,6 +1039,15 @@ def main():
                         st.error("Authentication failed: Invalid credentials.")
         return
 
+    # Auto-logout idle operators. Timeout is configurable via secrets so a
+    # deployment can tighten/loosen it without a code change; defaults to
+    # DEFAULT_SESSION_TIMEOUT_MINUTES if unset.
+    session_timeout_minutes = int(st.secrets.get("SESSION_TIMEOUT_MINUTES", DEFAULT_SESSION_TIMEOUT_MINUTES))
+    if not enforce_session_timeout(session_timeout_minutes):
+        return
+
+    max_scans_per_day = int(st.secrets.get("MAX_ACTIVE_SCANS_PER_DAY", DEFAULT_MAX_ACTIVE_SCANS_PER_DAY))
+
     vt_key = st.secrets.get("VIRUSTOTAL_API_KEY", "")
     abuse_key = st.secrets.get("ABUSEIPDB_API_KEY", "")
     groq_key = st.secrets.get("GROQ_API_KEY", "")
@@ -973,7 +1104,16 @@ def main():
         authorized = authorization_gate("pipeline")
 
         if st.button("Launch Autonomous AI Agent Loop", use_container_width=True, disabled=not authorized):
-            if pipeline_target:
+            validation_error = validate_target_input(pipeline_target) if pipeline_target else "Please specify a target for the autonomous agent."
+            quota_error = None
+            if not validation_error:
+                quota_error = check_and_increment_scan_quota(st.session_state.user, max_scans_per_day)
+
+            if quota_error:
+                st.error(quota_error)
+            elif validation_error:
+                st.warning(validation_error)
+            else:
                 with st.spinner("Autonomous AI Agent taking full control: running deep recon and deduplication loops..."):
                     local_db.init_db()
 
@@ -1141,7 +1281,7 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
                         st.markdown("### Generated Autonomous Agent Report Preview")
                         st.markdown(auto_report_markdown)
 
-                        dl1, dl2 = st.columns(2)
+                        dl1, dl2, dl3 = st.columns(3)
                         with dl1:
                             st.download_button(
                                 label="Download Report (.md)",
@@ -1158,8 +1298,23 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
                                 mime="application/json",
                                 use_container_width=True
                             )
-            else:
-                st.warning("Please specify a target for the autonomous agent.")
+                        with dl3:
+                            # CSV of the CVE findings — the one artifact most
+                            # likely to be pasted straight into a ticketing
+                            # system or spreadsheet-based tracker, so it gets
+                            # its own flat export instead of only living
+                            # inside the JSON blob.
+                            if cve_res:
+                                cve_csv = pd.DataFrame([v.to_dict() for v in cve_res]).to_csv(index=False)
+                            else:
+                                cve_csv = "cve_id,title,description,severity,cvss_score,vector_string,affected_configurations,published_date,remediation,match_confidence\n"
+                            st.download_button(
+                                label="Download CVE Findings (.csv)",
+                                data=cve_csv,
+                                file_name=f"mhzaly_cve_findings_{pipeline_target.replace('/', '_')}.csv",
+                                mime="text/csv",
+                                use_container_width=True
+                            )
         elif not authorized:
             st.caption("Check the authorization box above to enable scanning.")
 
@@ -1271,7 +1426,14 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
         authorized = authorization_gate("recon")
 
         if st.button("Launch Recon & Asset Discovery", use_container_width=True, disabled=not authorized):
-            if target_input:
+            validation_error = validate_target_input(target_input) if target_input else "Please specify a target domain or URL."
+            quota_error = check_and_increment_scan_quota(st.session_state.user, max_scans_per_day) if not validation_error else None
+
+            if quota_error:
+                st.error(quota_error)
+            elif validation_error:
+                st.warning(validation_error)
+            else:
                 with st.spinner(f"Executing deep offensive reconnaissance on {target_input}..."):
                     recon = BugBountyReconEngine.deep_recon(target_input)
 
@@ -1314,8 +1476,6 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
                                 st.dataframe(pd.DataFrame({'subdomain': subs}), use_container_width=True)
                             else:
                                 st.info("No subdomains found via crt.sh.")
-            else:
-                st.warning("Please specify a target domain or URL.")
         elif not authorized:
             st.caption("Check the authorization box above to enable scanning.")
 
@@ -1325,7 +1485,14 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
         authorized = authorization_gate("audit")
 
         if st.button("Execute Full Infrastructure Audit", use_container_width=True, disabled=not authorized):
-            if target_domain:
+            validation_error = validate_target_input(target_domain, allow_url=False) if target_domain else "Please provide a valid target host."
+            quota_error = check_and_increment_scan_quota(st.session_state.user, max_scans_per_day) if not validation_error else None
+
+            if quota_error:
+                st.error(quota_error)
+            elif validation_error:
+                st.warning(validation_error)
+            else:
                 with st.spinner(f"Executing live infrastructure audit against {target_domain}..."):
                     audit_data = AdvancedReconEngine.audit_infrastructure(target_domain)
 
@@ -1363,8 +1530,6 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
                                 for h_name, h_val in headers.items():
                                     icon = "❌" if h_val == 'MISSING' else "✅"
                                     st.write(f"{icon} **{h_name}:** `{h_val}`")
-            else:
-                st.warning("Please provide a valid target host.")
         elif not authorized:
             st.caption("Check the authorization box above to enable scanning.")
 
