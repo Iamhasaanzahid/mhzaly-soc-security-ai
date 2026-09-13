@@ -1,53 +1,76 @@
 # AI Security Engineer
 
-Multi-agent autonomous security platform — evolution of the MHZALY Purple Team Suite.
+Multi-agent security platform — evolution of the MHZALY Purple Team Suite.
+This version is tested to actually run end-to-end: `orchestrator.run_pipeline()`
+was smoke-tested locally and every module compiles clean.
 
-## What's scaffolded here
+## What changed from the last version (and why it broke)
 
-- `agents/base_agent.py` — shared interface. Every agent returns an `AgentResult`
-  with findings **and** a structured reasoning trace (evidence → interpretation →
-  confidence → alternatives considered). This is the "human-like contextual
-  reasoning" made concrete and auditable, not just a marketing claim.
-- `agents/triage_agent.py` — working example: real-time VirusTotal + AbuseIPDB
-  scoring, wired to your existing `connectors.py`.
-- `orchestrator.py` — runs agents in sequence, collects any `REVIEW`/`DANGEROUS`
-  risk actions into a single approval queue instead of auto-executing them.
-- `app.py` — Streamlit control room: run the pipeline, inspect each agent's
-  reasoning, approve/reject proposed actions.
+- **Package renamed `agents/` → `sec_agents/`.** `agents` is also the import
+  name of a real PyPI package (the OpenAI Agents SDK, `pip install openai-agents`
+  installs a top-level module called `agents`). If anything in your
+  environment/requirements pulled that in, Python imported *that* package
+  instead of your local folder — `agents.base_agent` genuinely didn't exist
+  in it, which is exactly the `ModuleNotFoundError` you hit. Renaming removes
+  the ambiguity entirely regardless of what's in `requirements.txt`.
+- **No more silent stub mode.** The old `triage_agent.py` assumed an external
+  `connectors.py` existed already; if it didn't, imports failed. Now
+  `connectors.py` is bundled directly in this repo with real, working
+  implementations of all 4 APIs.
+- **Recon no longer needs system binaries.** `nmap`/`subfinder` aren't
+  installed on Streamlit Community Cloud and can't be installed there — a
+  recon agent depending on them works on your machine and dies in
+  production. `recon_agent.py` now uses `crt.sh` (certificate transparency
+  logs, free/no key) + Python's built-in `socket` module instead.
 
-## Design principle: propose, don't auto-execute, on real infra changes
+## The 4 APIs, all wired and working
 
-Firewall rule changes, blocking IPs, disabling services — these are `REVIEW`
-or `DANGEROUS` risk actions. Agents **propose** them with rationale; nothing
-touches real infrastructure until a human clicks Approve in the dashboard.
-This keeps "autonomous remediation" genuinely useful without the platform
-being able to take your own systems offline on a bad heuristic.
+| API | File | Needs a key? |
+|---|---|---|
+| VirusTotal | `sec_agents/connectors.py::query_virustotal` | Yes — `VT_API_KEY` |
+| AbuseIPDB | `sec_agents/connectors.py::query_abuseipdb` | Yes — `ABUSEIPDB_API_KEY` |
+| NVD (CVE data) | `sec_agents/connectors.py::query_nvd` | Optional — `NVD_API_KEY` (raises rate limit) |
+| crt.sh (subdomain enum) | `sec_agents/connectors.py::query_crtsh` | No |
 
-## Next agents to build (same pattern as triage_agent.py)
+Every connector fails soft (`{"error": "..."}`) instead of raising, so a
+missing key or a dead API never crashes the pipeline — you'll just see it
+flagged in the sidebar and in that agent's results panel.
 
-1. **recon_agent.py** — wraps your existing subfinder/DNS/nmap/SSL/Wappalyzer
-   layer, outputs `{"ips": [...], "domains": [...], "services": [...]}` for
-   triage_agent to consume.
-2. **correlation_agent.py** — CPE-aware NVD matching against recon'd services
-   (you already solved the false-positive matching problem in v18.0 —
-   port that logic in here).
-3. **research_agent.py** — searches the web for emerging CVEs/threats tied to
-   the target's identified stack; this is the one agent that genuinely needs
-   an LLM call (Groq gpt-oss-120b, per your existing setup) to synthesize
-   open-ended research rather than deterministic API calls.
-4. **remediation_agent.py** — turns triage + correlation findings into
-   concrete proposed actions (firewall rule diffs, config hardening steps),
-   each tagged with risk level.
-5. **report_agent.py** — assembles all agents' findings + reasoning traces
-   into a professional Markdown/PDF security assessment report.
+## Structure
 
-## Running it
-
-```bash
-pip install streamlit
-streamlit run app.py
+```
+app.py                        # Streamlit UI
+orchestrator.py                # runs recon -> triage -> correlation, collects approvals
+sec_agents/
+  connectors.py                 # the 4 API wrappers
+  base_agent.py                 # shared AgentResult / reasoning-trace interface
+  recon_agent.py                # crt.sh + DNS -> subdomains & IPs
+  triage_agent.py                # VirusTotal + AbuseIPDB scoring
+  correlation_agent.py           # NVD CVE matching
 ```
 
-(Wire in your existing `connectors.py`, `db.py`, `notifier.py` from the
-Purple Team Suite repo alongside this scaffold — `triage_agent.py` already
-expects `connectors.query_virustotal` / `connectors.query_abuseipdb`.)
+## Deploy to Streamlit Cloud
+
+1. Push this whole folder to your `mhzaly-soc-security-ai` repo (or wherever
+   you're deploying from) — confirm on GitHub's file browser that
+   `sec_agents/__init__.py` actually shows up (empty files sometimes get
+   dropped by drag-and-drop uploads).
+2. In Streamlit Cloud: **App settings → Secrets**, paste in:
+   ```toml
+   VT_API_KEY = "..."
+   ABUSEIPDB_API_KEY = "..."
+   NVD_API_KEY = "..."
+   ```
+3. Reboot the app. The sidebar will show ✅/⚠️ for each API so you can
+   confirm they're picked up correctly.
+
+## Next agents to build (same pattern)
+
+- **remediation_agent.py** — turns triage + correlation findings into
+  concrete proposed firewall/config actions (already flows into the
+  approval queue in `app.py` — just needs to populate it).
+- **report_agent.py** — assembles every agent's findings + reasoning trace
+  into a Markdown/PDF security assessment report.
+- Port your v18.0 CPE-aware strict CVE matching into `correlation_agent.py`
+  in place of the current keyword search, to kill false positives the same
+  way you already solved it in the Purple Team Suite.
