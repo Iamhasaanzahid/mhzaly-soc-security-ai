@@ -34,7 +34,7 @@ from typing import Dict, List, Any, Optional, Callable
 from dataclasses import dataclass, asdict
 import socket
 import ssl
-
+import dns.resolver
 import re
 import urllib.parse
 import base64
