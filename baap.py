@@ -1903,11 +1903,11 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 *Generated via MHZALY Autonomous AI Bug Bounty Platform*
 """
-
-                        st.markdown("---")
+st.markdown("---")
                         st.markdown("### Generated Autonomous Agent Report Preview")
                         st.markdown(auto_report_markdown)
-dl1, dl2, dl3 = st.columns(3)
+
+                        dl1, dl2, dl3 = st.columns(3)
                         with dl1:
                             st.download_button(
                                 label="Download Report (.md)",
@@ -1937,29 +1937,29 @@ dl1, dl2, dl3 = st.columns(3)
                                 use_container_width=True
                             )
 
-                    # --- Advanced Feature Integration ---
-                    remediation_script = af.generate_remediation_script(infra_audit, agent_result.get('exposed_files', []))
-                    
-                    st.markdown("### 🛠️ Automated Hardening & Remediation Script")
-                    st.code(remediation_script, language='bash')
-                    st.download_button(
-                        "📥 Download Autonomous Hardening Script (.sh)", 
-                        data=remediation_script, 
-                        file_name=f"autonomous_harden_{pipeline_target.replace('/', '_')}.sh", 
-                        mime="text/plain",
-                        use_container_width=True
-                    )
+                        # --- Advanced Feature Integration ---
+                        remediation_script = af.generate_remediation_script(infra_audit, agent_result.get('exposed_files', []))
+                        
+                        st.markdown("### 🛠️ Automated Hardening & Remediation Script")
+                        st.code(remediation_script, language='bash')
+                        st.download_button(
+                            "📥 Download Autonomous Hardening Script (.sh)", 
+                            data=remediation_script, 
+                            file_name=f"autonomous_harden_{pipeline_target.replace('/', '_')}.sh", 
+                            mime="text/plain",
+                            use_container_width=True
+                        )
 
-                    siem_channels = {
-                        "discord": st.secrets.get("DISCORD_WEBHOOK_URL", ""),
-                        "slack": st.secrets.get("SLACK_WEBHOOK_URL", "")
-                    }
-                    af.send_multi_siem_alert(
-                        siem_channels, 
-                        title=f"🛰️ Autonomous Agent Scan — {pipeline_target}", 
-                        message=f"Pipeline completed with Risk Score: {risk['score']}/100 ({risk['band']}).",
-                        severity=risk['band']
-                    )
+                        siem_channels = {
+                            "discord": st.secrets.get("DISCORD_WEBHOOK_URL", ""),
+                            "slack": st.secrets.get("SLACK_WEBHOOK_URL", "")
+                        }
+                        af.send_multi_siem_alert(
+                            siem_channels, 
+                            title=f"🛰️ Autonomous Agent Scan — {pipeline_target}", 
+                            message=f"Pipeline completed with Risk Score: {risk['score']}/100 ({risk['band']}).",
+                            severity=risk['band']
+                        )
 
         elif not authorized:
             st.caption("Check the authorization box above to enable scanning.")
@@ -2111,6 +2111,3 @@ dl1, dl2, dl3 = st.columns(3)
         st.write(f"**Groq AI Agent Engine:** {'Active (openai/gpt-oss-120b)' if groq_key else 'Missing'}")
         st.write("**SQLite Shared Database (`mhzaly_soc.db`):** Initialized")
         st.write(f"**Auth Credentials Configured:** {'Yes' if st.secrets.get('APP_USERNAME') and st.secrets.get('APP_PASSWORD') else 'No — set APP_USERNAME/APP_PASSWORD in secrets'}")
-
-if __name__ == "__main__":
-    main()
