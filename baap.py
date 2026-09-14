@@ -4,17 +4,6 @@
 MHZALY BUG BOUNTY & ENTERPRISE SECURITY PLATFORM v18.0 - HARDENED SaaS EDITION
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Comprehensive Purple Team Operations Suite (Red Team Recon + Blue Team SOC Automation)
-Changes vs v17.5:
-- CPE-aware CVE correlation (kills the "React" false-positive class of match)
-- SSRF guard on every outbound recon/scan request (blocks private/link-local/metadata ranges)
-- Explicit authorization gate before any active scan runs
-- Hardened auth: constant-time password check, no insecure default creds, login lockout
-- Retry-with-backoff + lightweight response caching for VT/AbuseIPDB/NVD/Groq calls
-- AI report generation checks finish_reason and continues instead of silently truncating
-- Free-tier subdomain enumeration via crt.sh
-- Aggregate numeric risk score per target
-- JSON export alongside Markdown
-
 Author: Muhammad Hassaan Zahid
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
@@ -74,14 +63,6 @@ class ScopeViolation(Exception):
 
 
 def assert_public_host(hostname: str) -> None:
-    """
-    SSRF guard. Resolves `hostname` and raises ScopeViolation if it lands on a
-    private, loopback, link-local, reserved, or cloud-metadata address.
-    Call this BEFORE making any outbound request or opening any socket to a
-    user-supplied target — this app runs as a hosted service, and without this
-    check a "domain" input of e.g. "169.254.169.254" or "localhost" would let a
-    user pivot the server into scanning its own internal network.
-    """
     try:
         infos = socket.getaddrinfo(hostname, None)
     except socket.gaierror as e:
@@ -104,7 +85,6 @@ def assert_public_host(hostname: str) -> None:
 
 
 def with_retry(fn: Callable, *args, retries: int = 2, backoff: float = 1.5, **kwargs):
-    """Simple retry with exponential backoff for flaky/rate-limited HTTP calls."""
     last_exc = None
     for attempt in range(retries + 1):
         try:
@@ -117,11 +97,6 @@ def with_retry(fn: Callable, *args, retries: int = 2, backoff: float = 1.5, **kw
 
 
 class TTLCache:
-    """
-    Minimal in-memory TTL cache so repeated lookups (e.g. re-rendering a
-    Streamlit page) don't burn free-tier VT/AbuseIPDB/NVD quota. Not persisted
-    across process restarts — that's fine for its purpose (burst dedup).
-    """
     def __init__(self, ttl_seconds: int = 900):
         self.ttl = ttl_seconds
         self._store: Dict[str, Any] = {}
@@ -169,12 +144,12 @@ class VulnerabilityRecord:
 def compute_risk_score(vt_malicious: int, abuse_score: int, top_cvss: float,
                        exposed_count: int = 0, missing_headers: int = 0,
                        risky_open_ports: int = 0) -> Dict[str, Any]:
-    vt_component = min(vt_malicious * 8, 40)         # up to 40 pts
-    abuse_component = min(abuse_score * 0.3, 30)       # up to 30 pts
-    cvss_component = min((top_cvss / 10) * 30, 30)     # up to 30 pts
-    exposure_component = min(exposed_count * 6, 24)    # up to 24 pts
-    header_component = min(missing_headers * 2.5, 12.5)  # up to 12.5 pts
-    port_component = min(risky_open_ports * 5, 15)     # up to 15 pts
+    vt_component = min(vt_malicious * 8, 40)
+    abuse_component = min(abuse_score * 0.3, 30)
+    cvss_component = min((top_cvss / 10) * 30, 30)
+    exposure_component = min(exposed_count * 6, 24)
+    header_component = min(missing_headers * 2.5, 12.5)
+    port_component = min(risky_open_ports * 5, 15)
 
     score = round(
         vt_component + abuse_component + cvss_component +
@@ -1330,9 +1305,7 @@ def main():
     elif module == "AI Security Engineer":
         st.markdown("# 🧠 AI Security Engineer")
         st.markdown(
-            "<p style='color: #9ca3af;'>This is now the single place for all real security-engineer work — recon & "
-            "fuzzing, infrastructure/port/TLS/header audit, subdomain enumeration, CPE-aware CVE correlation, and "
-            "VT/AbuseIPDB threat-intel triage all run together here...</p>",
+            "<p style='color: #9ca3af;'>This is now the single place for all real security-engineer work...</p>",
             unsafe_allow_html=True,
         )
 
@@ -1662,7 +1635,7 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
                                 use_container_width=True
                             )
 
-                        # --- Advanced Feature Integration ---
+                        # --- Advanced Feature Integration (Fixed Argument Passing) ---
                         remediation_script = af.generate_remediation_script(infra_audit, agent_result.get('exposed_files', []))
                         
                         st.markdown("### 🛠️ Automated Hardening & Remediation Script")
