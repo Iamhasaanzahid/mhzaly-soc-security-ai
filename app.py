@@ -42,6 +42,13 @@ import base64
 import hashlib
 import concurrent.futures
 import subprocess
+import io
+
+try:
+    from fpdf import FPDF
+    FPDF_AVAILABLE = True
+except ImportError:
+    FPDF_AVAILABLE = False
 
 # Import local backend modules for Autonomous SOC & Connectors
 import db
@@ -395,6 +402,19 @@ class BugBountyReconEngine:
 
             report['technologies'] = list(set(report['technologies']))
 
+            # Cookie security flags — a real analyst always checks these.
+            cookie_findings = []
+            for ck in resp.cookies:
+                samesite = ck.get_nonstandard_attr('SameSite') or ck.get_nonstandard_attr('samesite')
+                httponly = bool(ck.has_nonstandard_attr('HttpOnly') or ck.has_nonstandard_attr('httponly'))
+                cookie_findings.append({
+                    'name': ck.name,
+                    'secure': bool(ck.secure),
+                    'httponly': httponly,
+                    'samesite': samesite or 'Not set',
+                })
+            report['cookies'] = cookie_findings
+
             fuzz_paths = [
                 '/.env', '/robots.txt', '/sitemap.xml', '/git/config',
                 '/backup.zip', '/api/v1/users', '/swagger.ui', '/phpinfo.php',
@@ -404,30 +424,35 @@ class BugBountyReconEngine:
             ]
 
             base_origin = f"{urllib.parse.urlparse(target_url).scheme}://{urllib.parse.urlparse(target_url).netloc}"
+            probe_headers = dict(session.headers)
 
-            seen_paths = set()
-            for path in fuzz_paths:
-                if path in seen_paths:
-                    continue
-                seen_paths.add(path)
+            def _fuzz_one(path):
                 test_url = base_origin + path
                 try:
-                    p_resp = session.get(test_url, timeout=3, verify=False)
+                    p_resp = requests.get(test_url, timeout=3, verify=False, headers=probe_headers)
                     if p_resp.status_code in [200, 403, 401]:
                         p_text = p_resp.text.lower()
 
                         # Filter out Streamlit soft-404 pages
                         if 'streamlit' in p_text and 'root' in p_text and len(p_text) > 500:
                             if abs(len(p_text) - len(base_homepage_text)) < 200:
-                                continue
+                                return None
 
                         if p_resp.status_code == 200 and len(p_text) > 10:
                             if any(err in p_text for err in ["not found", "404 page", "does not exist", "object not found"]):
-                                continue
+                                return None
 
-                        report['exposed_files'].append({'path': path, 'status': p_resp.status_code, 'size': len(p_resp.text)})
+                        return {'path': path, 'status': p_resp.status_code, 'size': len(p_resp.text)}
                 except Exception:
                     pass
+                return None
+
+            # Parallelized fuzzing — 20 sequential 3s-timeout requests could take up
+            # to a minute; a small thread pool cuts that dramatically.
+            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as fuzz_pool:
+                for result in fuzz_pool.map(_fuzz_one, fuzz_paths):
+                    if result:
+                        report['exposed_files'].append(result)
         except ScopeViolation as e:
             report['error'] = f"Scope violation: {e}"
             report['blocked'] = True
@@ -839,6 +864,49 @@ class AdvancedReconEngine:
                     report['headers'][h] = resp.headers.get(h, 'MISSING')
             except Exception as e:
                 report['headers']['error'] = str(e)
+
+            # CORS misconfiguration probe — send a bogus Origin and see if the
+            # server reflects it back (or allows "*" together with credentials).
+            try:
+                probe_origin = "https://mhzaly-cors-probe.invalid"
+                cors_resp = with_retry(requests.get, f"https://{clean_domain}", timeout=5, verify=False,
+                                        headers={"Origin": probe_origin})
+                acao = cors_resp.headers.get("Access-Control-Allow-Origin")
+                acac = cors_resp.headers.get("Access-Control-Allow-Credentials", "").lower() == "true"
+                reflects = acao == probe_origin
+                wildcard_with_creds = acao == "*" and acac
+                report['cors'] = {
+                    "checked": True,
+                    "acao": acao or "not set",
+                    "allow_credentials": acac,
+                    "misconfigured": bool(reflects or wildcard_with_creds),
+                    "detail": ("reflects an arbitrary Origin back" if reflects else
+                               "allows '*' together with credentials" if wildcard_with_creds else
+                               "no obvious misconfiguration"),
+                }
+            except Exception as e:
+                report['cors'] = {"checked": False, "error": str(e)}
+
+            # Email-security posture — SPF (domain TXT) and DMARC (_dmarc TXT).
+            spf_record, dmarc_record = None, None
+            try:
+                for r in (report['dns'].get('TXT') or []):
+                    txt = str(r).strip('"')
+                    if txt.lower().startswith('v=spf1'):
+                        spf_record = txt
+                        break
+            except Exception:
+                pass
+            try:
+                dmarc_answers = dns.resolver.resolve(f"_dmarc.{clean_domain}", 'TXT')
+                for r in dmarc_answers:
+                    txt = str(r).strip('"')
+                    if 'v=dmarc1' in txt.lower():
+                        dmarc_record = txt
+                        break
+            except Exception:
+                pass
+            report['email_security'] = {"spf": spf_record, "dmarc": dmarc_record}
         except ScopeViolation as e:
             report['error'] = f"Scope violation: {e}"
             report['blocked'] = True
@@ -965,10 +1033,44 @@ class AnalystNarrator:
             return "Threat-intel reputation checks either weren't configured (VT/AbuseIPDB keys) or returned nothing — that section is inconclusive rather than 'clean'."
         return " ".join(parts)
 
+    def _cookies_paragraph(self) -> str:
+        cookies = self.recon.get('cookies', [])
+        if not cookies:
+            return ""
+        weak = [c for c in cookies if not c['secure'] or not c['httponly']]
+        if not weak:
+            return f"All {len(cookies)} cookie(s) set by the app have Secure and HttpOnly flags — good practice."
+        names = ", ".join(c['name'] for c in weak)
+        return (f"{len(weak)} of {len(cookies)} cookie(s) are missing Secure and/or HttpOnly flags ({names}) — "
+                f"that makes them more exposed to interception or client-side script access than they need to be.")
+
+    def _cors_paragraph(self) -> str:
+        cors = self.infra.get('cors', {})
+        if not cors.get('checked'):
+            return ""
+        if cors.get('misconfigured'):
+            return f"CORS looks misconfigured: the response {cors.get('detail')}, which can let an attacker-controlled page read authenticated responses cross-origin."
+        return "CORS headers look reasonable — the server didn't blindly reflect an arbitrary Origin back."
+
+    def _email_security_paragraph(self) -> str:
+        es = self.infra.get('email_security', {})
+        if not es:
+            return ""
+        spf, dmarc = es.get('spf'), es.get('dmarc')
+        if spf and dmarc:
+            return "Email anti-spoofing is in place — both SPF and DMARC records are published."
+        missing = []
+        if not spf:
+            missing.append("SPF")
+        if not dmarc:
+            missing.append("DMARC")
+        return f"No {' or '.join(missing)} record found for this domain — that's a gap in email anti-spoofing defenses if this domain sends mail."
+
     def build(self) -> str:
         lines = [random.choice(self.OPENERS).format(target=self.target), ""]
         for para in [self._exposure_paragraph(), self._tech_paragraph(), self._headers_paragraph(),
-                     self._ssl_paragraph(), self._ports_paragraph(), self._subdomains_paragraph(),
+                     self._cookies_paragraph(), self._cors_paragraph(), self._ssl_paragraph(),
+                     self._email_security_paragraph(), self._ports_paragraph(), self._subdomains_paragraph(),
                      self._cve_paragraph(), self._threat_intel_paragraph()]:
             if para:
                 lines.append(para)
@@ -978,6 +1080,157 @@ class AnalystNarrator:
         lines.append("_Automated preliminary assessment — verify exposed paths and CVE matches by hand before acting on them, "
                       "and don't treat a clean threat-intel/CVE result as a guarantee of no risk._")
         return "\n".join(lines)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 2c. EXECUTIVE SUMMARY, PDF EXPORT & SCAN HISTORY (AI Security Engineer)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def build_executive_summary(recon: Dict[str, Any], infra: Dict[str, Any],
+                             cve_res: List[VulnerabilityRecord]) -> Dict[str, int]:
+    """
+    Severity-bucketed counts for a quick top-of-report scan, built only from
+    real findings already collected — no separate scoring model invented
+    here, just categorizing what the engines already found.
+    """
+    counts = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
+    for v in cve_res:
+        sev = (v.severity or "").upper()
+        if sev in counts:
+            counts[sev] += 1
+        elif v.cvss_score >= 9:
+            counts["Critical"] += 1
+        elif v.cvss_score >= 7:
+            counts["High"] += 1
+        elif v.cvss_score >= 4:
+            counts["Medium"] += 1
+        else:
+            counts["Low"] += 1
+
+    if recon.get('exposed_files'):
+        counts["High"] += len(recon['exposed_files'])
+
+    weak_cookies = [c for c in recon.get('cookies', []) if not c['secure'] or not c['httponly']]
+    if weak_cookies:
+        counts["Medium"] += len(weak_cookies)
+
+    if infra.get('cors', {}).get('misconfigured'):
+        counts["High"] += 1
+
+    missing_headers = sum(1 for v in infra.get('headers', {}).values() if v == 'MISSING')
+    if missing_headers:
+        counts["Medium"] += missing_headers
+
+    risky_ports = sum(1 for p in infra.get('ports', []) if p.get('port') in RISKY_PUBLIC_PORTS)
+    if risky_ports:
+        counts["High"] += risky_ports
+
+    es = infra.get('email_security', {})
+    if es and not (es.get('spf') and es.get('dmarc')):
+        counts["Low"] += 1
+
+    return counts
+
+
+def generate_pdf_report(target: str, risk: Dict[str, Any], summary_counts: Dict[str, int],
+                         report_text: str, recon: Dict[str, Any], infra: Dict[str, Any],
+                         cve_res: List[VulnerabilityRecord]) -> Optional[bytes]:
+    """Renders the analyst report to a PDF using fpdf2. Returns None if fpdf2
+    isn't installed — callers should show a fallback message rather than crash."""
+    if not FPDF_AVAILABLE:
+        return None
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.multi_cell(0, 10, "AI Security Engineer — Assessment Report")
+    pdf.set_font("Helvetica", "", 10)
+    pdf.multi_cell(0, 6, f"Target: {target}")
+    pdf.multi_cell(0, 6, f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    pdf.multi_cell(0, 6, f"Aggregate Risk: {risk.get('score', '?')}/100 ({risk.get('band', 'UNKNOWN')})")
+    pdf.ln(4)
+
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.multi_cell(0, 8, "Executive Summary")
+    pdf.set_font("Helvetica", "", 10)
+    for sev, count in summary_counts.items():
+        pdf.multi_cell(0, 6, f"  {sev}: {count}")
+    pdf.ln(4)
+
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.multi_cell(0, 8, "Analyst Write-Up")
+    pdf.set_font("Helvetica", "", 10)
+    clean_text = report_text.encode('latin-1', 'replace').decode('latin-1')
+    for line in clean_text.split("\n"):
+        pdf.multi_cell(0, 6, line if line.strip() else " ")
+
+    if cve_res:
+        pdf.ln(4)
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.multi_cell(0, 8, "CVE Findings")
+        pdf.set_font("Helvetica", "", 9)
+        for v in cve_res:
+            line = f"{v.cve_id} | CVSS {v.cvss_score} ({v.severity}) | match: {v.match_confidence}"
+            pdf.multi_cell(0, 6, line.encode('latin-1', 'replace').decode('latin-1'))
+
+    out = pdf.output(dest='S')
+    if isinstance(out, str):
+        out = out.encode('latin-1', 'replace')
+    return bytes(out)
+
+
+AI_SEC_ENGINEER_DB_PATH = "ai_security_engineer_history.db"
+
+
+def _ai_sec_db_connect() -> sqlite3.Connection:
+    conn = sqlite3.connect(AI_SEC_ENGINEER_DB_PATH)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS scan_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            target TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            risk_score REAL,
+            risk_band TEXT,
+            open_ports INTEGER,
+            exposed_paths INTEGER,
+            cve_count INTEGER,
+            operator TEXT
+        )
+    """)
+    return conn
+
+
+def save_ai_security_engineer_scan(target: str, risk: Dict[str, Any], open_ports: int,
+                                    exposed_count: int, cve_count: int, operator: str) -> None:
+    try:
+        conn = _ai_sec_db_connect()
+        conn.execute(
+            "INSERT INTO scan_history (target, timestamp, risk_score, risk_band, open_ports, exposed_paths, cve_count, operator) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (target, datetime.now().isoformat(), risk.get('score'), risk.get('band'),
+             open_ports, exposed_count, cve_count, operator),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.warning(f"Could not save AI Security Engineer scan history: {e}")
+
+
+def get_ai_security_engineer_history(target: Optional[str] = None, limit: int = 20) -> List[Dict[str, Any]]:
+    try:
+        conn = _ai_sec_db_connect()
+        conn.row_factory = sqlite3.Row
+        if target:
+            cur = conn.execute("SELECT * FROM scan_history WHERE target = ? ORDER BY id DESC LIMIT ?", (target, limit))
+        else:
+            cur = conn.execute("SELECT * FROM scan_history ORDER BY id DESC LIMIT ?", (limit,))
+        rows = [dict(r) for r in cur.fetchall()]
+        conn.close()
+        return rows
+    except Exception as e:
+        logger.warning(f"Could not read AI Security Engineer scan history: {e}")
+        return []
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1257,18 +1510,31 @@ def main():
             elif validation_error:
                 st.warning(validation_error)
             else:
-                with st.spinner(f"Running recon, infra audit, subdomains, CVE correlation and threat intel on {ai_target}..."):
-                    recon = BugBountyReconEngine.deep_recon(ai_target)
-                    if recon.get('blocked'):
-                        st.error(f"Scan blocked by scope guard: {recon.get('error')}")
-                    else:
-                        infra = AdvancedReconEngine.audit_infrastructure(ai_target)
-                        subs = SubdomainEnumEngine.enumerate(ai_target)
+                clean_target = ai_target.replace('https://', '').replace('http://', '').split('/')[0]
+                ti_indicator = manual_ti_indicator.strip() if manual_ti_indicator.strip() else clean_target
 
+                with st.spinner(f"Running recon, infra audit, subdomains, and threat intel on {ai_target} in parallel..."):
+                    # Recon, infra audit, subdomain enum, and threat-intel triage don't
+                    # depend on each other's output, so run them concurrently instead
+                    # of back-to-back — this is the bulk of the wall-clock time.
+                    ti_service = ThreatIntelService(vt_key, abuse_key, cache=shared_cache)
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as top_pool:
+                        fut_recon = top_pool.submit(BugBountyReconEngine.deep_recon, ai_target)
+                        fut_infra = top_pool.submit(AdvancedReconEngine.audit_infrastructure, ai_target)
+                        fut_subs = top_pool.submit(SubdomainEnumEngine.enumerate, ai_target)
+                        fut_ti = top_pool.submit(ti_service.triage_indicator, ti_indicator)
+                        recon = fut_recon.result()
+                        infra = fut_infra.result()
+                        subs = fut_subs.result()
+                        ti_res = fut_ti.result()
+
+                if recon.get('blocked'):
+                    st.error(f"Scan blocked by scope guard: {recon.get('error')}")
+                else:
+                    with st.spinner("Correlating CVEs against the fingerprinted stack..."):
                         tech_stack = recon.get('technologies', [])
                         AMBIGUOUS_GENERIC_TECH = {"react", "express", "cloudflare"}
                         specific_techs = [t for t in tech_stack if t.lower() not in AMBIGUOUS_GENERIC_TECH]
-                        clean_target = ai_target.replace('https://', '').replace('http://', '').split('/')[0]
                         domain_keyword = clean_target.split('.')[0] if '.' in clean_target else clean_target
                         auto_nvd_term = specific_techs[0] if specific_techs else domain_keyword
                         nvd_query_term = manual_nvd_keyword.strip() if manual_nvd_keyword.strip() else auto_nvd_term
@@ -1279,122 +1545,178 @@ def main():
                         if not cve_res and not manual_nvd_keyword.strip() and domain_keyword != nvd_query_term:
                             cve_res = nvd.search_cve(domain_keyword, max_results=8, min_confidence=min_conf)
 
-                        ti_indicator = manual_ti_indicator.strip() if manual_ti_indicator.strip() else clean_target
-                        ti = ThreatIntelService(vt_key, abuse_key, cache=shared_cache)
-                        ti_res = ti.triage_indicator(ti_indicator)
+                    top_cvss = max([v.cvss_score for v in cve_res], default=0.0)
+                    missing_headers = sum(1 for v in infra.get('headers', {}).values() if v == 'MISSING')
+                    risky_ports = sum(1 for p in infra.get('ports', []) if p.get('port') in RISKY_PUBLIC_PORTS)
+                    exposed_count = len(recon.get('exposed_files', []))
+                    open_ports_count = len(infra.get('ports', []))
 
-                        top_cvss = max([v.cvss_score for v in cve_res], default=0.0)
-                        missing_headers = sum(1 for v in infra.get('headers', {}).values() if v == 'MISSING')
-                        risky_ports = sum(1 for p in infra.get('ports', []) if p.get('port') in RISKY_PUBLIC_PORTS)
-                        exposed_count = len(recon.get('exposed_files', []))
+                    risk = compute_risk_score(
+                        ti_res['vt_summary']['malicious'], ti_res['abuse_summary']['score'], top_cvss,
+                        exposed_count=exposed_count, missing_headers=missing_headers, risky_open_ports=risky_ports,
+                    )
+                    summary_counts = build_executive_summary(recon, infra, cve_res)
 
-                        risk = compute_risk_score(
-                            ti_res['vt_summary']['malicious'], ti_res['abuse_summary']['score'], top_cvss,
-                            exposed_count=exposed_count, missing_headers=missing_headers, risky_open_ports=risky_ports,
-                        )
+                    narrator = AnalystNarrator(clean_target, recon, infra, subs, cve_res, ti_res, risk)
+                    local_report = narrator.build()
+                    polished = None
+                    if groq_key:
+                        try:
+                            polished = AutonomousAgentExecutor._call_groq(
+                                [
+                                    {'role': 'system', 'content': "You are a senior security engineer. Rewrite the following real findings into clear, professional, conversational prose. Do NOT invent any new findings, numbers, CVEs, or claims beyond what is given — only rephrase and organize."},
+                                    {'role': 'user', 'content': local_report}
+                                ],
+                                groq_key, max_tokens=1200, temperature=0.3,
+                            )
+                        except Exception:
+                            polished = None
+                    report_text = polished or local_report
+                    report_source = "Local analyst engine + LLM polish" if polished else "Local analyst engine (no LLM key configured)"
 
-                        narrator = AnalystNarrator(clean_target, recon, infra, subs, cve_res, ti_res, risk)
-                        local_report = narrator.build()
-                        polished = None
-                        if groq_key:
-                            try:
-                                polished = AutonomousAgentExecutor._call_groq(
-                                    [
-                                        {'role': 'system', 'content': "You are a senior security engineer. Rewrite the following real findings into clear, professional, conversational prose. Do NOT invent any new findings, numbers, CVEs, or claims beyond what is given — only rephrase and organize."},
-                                        {'role': 'user', 'content': local_report}
-                                    ],
-                                    groq_key, max_tokens=1200, temperature=0.3,
-                                )
-                            except Exception:
-                                polished = None
-                        report_text = polished or local_report
-                        report_source = "Local analyst engine + LLM polish" if polished else "Local analyst engine (no LLM key configured)"
+                    save_ai_security_engineer_scan(clean_target, risk, open_ports_count, exposed_count,
+                                                    len(cve_res), st.session_state.user)
 
-                        st.success("AI Security Engineer run complete — every finding above is from a live check.")
+                    st.success("AI Security Engineer run complete — every finding above is from a live check.")
 
-                        m1, m2, m3, m4 = st.columns(4)
-                        m1.metric("Aggregate Risk", f"{risk['score']}/100", risk['band'])
-                        m2.metric("Open Ports", len(infra.get('ports', [])))
-                        m3.metric("Exposed Paths", exposed_count)
-                        m4.metric("CVEs (filtered)", len(cve_res))
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("Aggregate Risk", f"{risk['score']}/100", risk['band'])
+                    m2.metric("Open Ports", open_ports_count)
+                    m3.metric("Exposed Paths", exposed_count)
+                    m4.metric("CVEs (filtered)", len(cve_res))
 
-                        st.markdown("### Analyst Write-Up")
-                        st.caption(f"Source: {report_source}")
-                        st.markdown(report_text)
+                    st.markdown("### Executive Summary")
+                    s1, s2, s3, s4 = st.columns(4)
+                    s1.metric("🔴 Critical", summary_counts["Critical"])
+                    s2.metric("🟠 High", summary_counts["High"])
+                    s3.metric("🟡 Medium", summary_counts["Medium"])
+                    s4.metric("🟢 Low", summary_counts["Low"])
 
-                        with st.expander("🔍 Raw findings behind this report"):
-                            st.markdown("**DNS Records**")
-                            dns_cols = st.columns(3)
-                            dns_data = recon.get('dns') or infra.get('dns') or {}
-                            for i, (rtype, recs) in enumerate(dns_data.items()):
-                                if recs:
-                                    with dns_cols[i % 3]:
-                                        st.caption(rtype)
-                                        for r in recs:
-                                            st.code(r, language=None)
-                            if not any(dns_data.values()):
-                                st.caption("No DNS records resolved.")
+                    st.markdown("### Analyst Write-Up")
+                    st.caption(f"Source: {report_source}")
+                    st.markdown(report_text)
 
-                            rt1, rt2 = st.columns(2)
-                            with rt1:
-                                st.markdown("**Tech stack / exposed paths**")
-                                st.write(f"Server: `{recon.get('server')}`")
-                                st.write(f"Technologies: {tech_stack or 'none fingerprinted'}")
-                                if recon.get('exposed_files'):
-                                    st.dataframe(pd.DataFrame(recon['exposed_files']), use_container_width=True, hide_index=True)
-                                st.markdown("**Subdomains (crt.sh)**")
-                                if subs:
-                                    st.dataframe(pd.DataFrame({'subdomain': subs}), use_container_width=True, hide_index=True)
-                                else:
-                                    st.caption("None found.")
-                                st.markdown("**TLS Certificate**")
-                                ssl_res = infra.get('ssl', {})
-                                if ssl_res.get('valid'):
-                                    st.json(ssl_res.get('details', {}))
-                                else:
-                                    st.caption(f"Unavailable: {ssl_res.get('error', 'no HTTPS response')}")
-                            with rt2:
-                                st.markdown("**Ports & headers**")
-                                if infra.get('ports'):
-                                    st.dataframe(pd.DataFrame(infra['ports']), use_container_width=True, hide_index=True)
-                                for h, v in infra.get('headers', {}).items():
-                                    if h == 'error':
-                                        continue
-                                    st.write(("🟢 " if v != 'MISSING' else "🔴 ") + f"`{h}`: `{v}`")
-                                st.markdown("**CVEs**")
-                                st.caption(f"NVD query used: `{nvd_query_term}`")
-                                if cve_res:
-                                    st.dataframe(pd.DataFrame([v.to_dict() for v in cve_res]), use_container_width=True, hide_index=True)
-                                else:
-                                    st.caption(f"No relevant CVEs for '{nvd_query_term}'.")
-                                st.markdown("**Threat Intel**")
-                                st.caption(f"Indicator checked: `{ti_indicator}`")
-                                if not vt_key and not abuse_key:
-                                    st.caption("VT/AbuseIPDB not configured — optional.")
-                                else:
-                                    st.json({"virustotal": ti_res['vt_summary'], "abuseipdb": ti_res['abuse_summary']})
+                    with st.expander("🔍 Raw findings behind this report"):
+                        st.markdown("**DNS Records**")
+                        dns_cols = st.columns(3)
+                        dns_data = recon.get('dns') or infra.get('dns') or {}
+                        for i, (rtype, recs) in enumerate(dns_data.items()):
+                            if recs:
+                                with dns_cols[i % 3]:
+                                    st.caption(rtype)
+                                    for r in recs:
+                                        st.code(r, language=None)
+                        if not any(dns_data.values()):
+                            st.caption("No DNS records resolved.")
 
-                        report_markdown = f"""# AI SECURITY ENGINEER REPORT
+                        rt1, rt2 = st.columns(2)
+                        with rt1:
+                            st.markdown("**Tech stack / exposed paths**")
+                            st.write(f"Server: `{recon.get('server')}`")
+                            st.write(f"Technologies: {tech_stack or 'none fingerprinted'}")
+                            if recon.get('exposed_files'):
+                                st.dataframe(pd.DataFrame(recon['exposed_files']), use_container_width=True, hide_index=True)
+                            st.markdown("**Cookie Security**")
+                            if recon.get('cookies'):
+                                st.dataframe(pd.DataFrame(recon['cookies']), use_container_width=True, hide_index=True)
+                            else:
+                                st.caption("No cookies set by the app.")
+                            st.markdown("**Subdomains (crt.sh)**")
+                            if subs:
+                                st.dataframe(pd.DataFrame({'subdomain': subs}), use_container_width=True, hide_index=True)
+                            else:
+                                st.caption("None found.")
+                            st.markdown("**TLS Certificate**")
+                            ssl_res = infra.get('ssl', {})
+                            if ssl_res.get('valid'):
+                                st.json(ssl_res.get('details', {}))
+                            else:
+                                st.caption(f"Unavailable: {ssl_res.get('error', 'no HTTPS response')}")
+                        with rt2:
+                            st.markdown("**Ports & headers**")
+                            if infra.get('ports'):
+                                st.dataframe(pd.DataFrame(infra['ports']), use_container_width=True, hide_index=True)
+                            for h, v in infra.get('headers', {}).items():
+                                if h == 'error':
+                                    continue
+                                st.write(("🟢 " if v != 'MISSING' else "🔴 ") + f"`{h}`: `{v}`")
+                            st.markdown("**CORS**")
+                            cors = infra.get('cors', {})
+                            if cors.get('checked'):
+                                (st.error if cors.get('misconfigured') else st.success)(cors.get('detail', ''))
+                            else:
+                                st.caption(f"Not checked: {cors.get('error', 'unknown')}")
+                            st.markdown("**Email Security (SPF/DMARC)**")
+                            es = infra.get('email_security', {})
+                            st.write(f"SPF: `{es.get('spf') or 'not found'}`")
+                            st.write(f"DMARC: `{es.get('dmarc') or 'not found'}`")
+                            st.markdown("**CVEs**")
+                            st.caption(f"NVD query used: `{nvd_query_term}`")
+                            if cve_res:
+                                st.dataframe(pd.DataFrame([v.to_dict() for v in cve_res]), use_container_width=True, hide_index=True)
+                            else:
+                                st.caption(f"No relevant CVEs for '{nvd_query_term}'.")
+                            st.markdown("**Threat Intel**")
+                            st.caption(f"Indicator checked: `{ti_indicator}`")
+                            if not vt_key and not abuse_key:
+                                st.caption("VT/AbuseIPDB not configured — optional.")
+                            else:
+                                st.json({"virustotal": ti_res['vt_summary'], "abuseipdb": ti_res['abuse_summary']})
+
+                    report_markdown = f"""# AI SECURITY ENGINEER REPORT
 **Target:** `{clean_target}`
 **Timestamp:** `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`
 **Risk:** {risk['score']}/100 ({risk['band']})
 **Source:** {report_source}
 
+## Executive Summary
+- Critical: {summary_counts['Critical']}
+- High: {summary_counts['High']}
+- Medium: {summary_counts['Medium']}
+- Low: {summary_counts['Low']}
+
 {report_text}
 """
-                        dcol1, dcol2 = st.columns(2)
-                        with dcol1:
-                            st.download_button("📥 Download Report (.md)", data=report_markdown,
-                                                file_name=f"ai_security_engineer_{clean_target}.md",
-                                                mime="text/markdown", use_container_width=True)
-                        with dcol2:
-                            st.download_button("📥 Download Findings (.json)", data=json.dumps({
-                                "target": clean_target, "risk": risk, "recon": recon, "infra": infra,
-                                "subdomains": subs, "cves": [v.to_dict() for v in cve_res], "threat_intel": ti_res,
-                            }, indent=2, default=str), file_name=f"ai_security_engineer_{clean_target}.json",
-                                mime="application/json", use_container_width=True)
+                    dcol1, dcol2, dcol3 = st.columns(3)
+                    with dcol1:
+                        st.download_button("📥 Download Report (.md)", data=report_markdown,
+                                            file_name=f"ai_security_engineer_{clean_target}.md",
+                                            mime="text/markdown", use_container_width=True)
+                    with dcol2:
+                        st.download_button("📥 Download Findings (.json)", data=json.dumps({
+                            "target": clean_target, "risk": risk, "summary_counts": summary_counts,
+                            "recon": recon, "infra": infra,
+                            "subdomains": subs, "cves": [v.to_dict() for v in cve_res], "threat_intel": ti_res,
+                        }, indent=2, default=str), file_name=f"ai_security_engineer_{clean_target}.json",
+                            mime="application/json", use_container_width=True)
+                    with dcol3:
+                        if FPDF_AVAILABLE:
+                            pdf_bytes = generate_pdf_report(clean_target, risk, summary_counts, report_text,
+                                                             recon, infra, cve_res)
+                            st.download_button("📥 Download Report (.pdf)", data=pdf_bytes,
+                                                file_name=f"ai_security_engineer_{clean_target}.pdf",
+                                                mime="application/pdf", use_container_width=True)
+                        else:
+                            st.caption("PDF export needs `fpdf2` — add it to requirements.txt to enable this button.")
         elif not authorized:
             st.caption("Check the authorization box above to enable scanning.")
+
+        st.markdown("---")
+        with st.expander("📜 Scan History"):
+            hist_target_filter = st.text_input("Filter by target (optional)", key="ai_sec_eng_hist_filter")
+            history_rows = get_ai_security_engineer_history(
+                target=hist_target_filter.strip() if hist_target_filter.strip() else None, limit=30
+            )
+            if history_rows:
+                hist_df = pd.DataFrame(history_rows)[["timestamp", "target", "risk_score", "risk_band",
+                                                        "open_ports", "exposed_paths", "cve_count", "operator"]]
+                st.dataframe(hist_df, use_container_width=True, hide_index=True)
+                if hist_target_filter.strip() and len(history_rows) > 1:
+                    trend_df = pd.DataFrame(history_rows)[["timestamp", "risk_score"]].iloc[::-1].set_index("timestamp")
+                    st.markdown("**Risk score trend for this target**")
+                    st.line_chart(trend_df)
+            else:
+                st.info("No past scans recorded yet — run one above to start building history.")
 
     elif module == "Autonomous SOC (Live DB)":
         render_autonomous_tab()
