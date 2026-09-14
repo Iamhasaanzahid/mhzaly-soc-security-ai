@@ -28,6 +28,7 @@ import sqlite3
 import logging
 import time
 import hmac
+import advanced_features as af
 import random
 import ipaddress
 from datetime import datetime
@@ -1941,6 +1942,40 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
                                 mime="text/csv",
                                 use_container_width=True
                             )
+                            st.download_button(
+                                label="Download CVE Findings (.csv)",
+                                data=cve_csv,
+                                file_name=f"mhzaly_cve_findings_{pipeline_target.replace('/', '_')}.csv",
+                                mime="text/csv",
+                                use_container_width=True
+                            )
+
+        # --- Advanced Feature Integration ---
+        remediation_script = af.generate_remediation_script(infra_audit, agent_result.get('exposed_files', []))
+        
+        st.markdown("### 🛠️ Automated Hardening & Remediation Script")
+        st.code(remediation_script, language='bash')
+        st.download_button(
+            "📥 Download Autonomous Hardening Script (.sh)", 
+            data=remediation_script, 
+            file_name=f"autonomous_harden_{pipeline_target.replace('/', '_')}.sh", 
+            mime="text/plain",
+            use_container_width=True
+        )
+
+        siem_channels = {
+            "discord": st.secrets.get("DISCORD_WEBHOOK_URL", ""),
+            "slack": st.secrets.get("SLACK_WEBHOOK_URL", "")
+        }
+        af.send_multi_siem_alert(
+            siem_channels, 
+            title=f"🛰️ Autonomous Agent Scan — {pipeline_target}", 
+            message=f"Pipeline completed with Risk Score: {risk['score']}/100 ({risk['band']}).",
+            severity=risk['band']
+        )
+
+elif not authorized:
+    st.caption("Check the authorization box above to enable scanning.")
         elif not authorized:
             st.caption("Check the authorization box above to enable scanning.")
 
