@@ -4,17 +4,6 @@
 MHZALY BUG BOUNTY & ENTERPRISE SECURITY PLATFORM v18.0 - HARDENED SaaS EDITION
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Comprehensive Purple Team Operations Suite (Red Team Recon + Blue Team SOC Automation)
-Changes vs v17.5:
-- CPE-aware CVE correlation (kills the "React" false-positive class of match)
-- SSRF guard on every outbound recon/scan request (blocks private/link-local/metadata ranges)
-- Explicit authorization gate before any active scan runs
-- Hardened auth: constant-time password check, no insecure default creds, login lockout
-- Retry-with-backoff + lightweight response caching for VT/AbuseIPDB/NVD/Groq calls
-- AI report generation checks finish_reason and continues instead of silently truncating
-- Free-tier subdomain enumeration via crt.sh
-- Aggregate numeric risk score per target
-- JSON export alongside Markdown
-
 Author: Muhammad Hassaan Zahid
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
@@ -28,6 +17,8 @@ import sqlite3
 import logging
 import time
 import hmac
+import advanced_features as af
+import random
 import ipaddress
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Callable
@@ -41,6 +32,13 @@ import base64
 import hashlib
 import concurrent.futures
 import subprocess
+import io
+
+try:
+    from fpdf import FPDF
+    FPDF_AVAILABLE = True
+except ImportError:
+    FPDF_AVAILABLE = False
 
 # Import local backend modules for Autonomous SOC & Connectors
 import db
@@ -65,14 +63,6 @@ class ScopeViolation(Exception):
 
 
 def assert_public_host(hostname: str) -> None:
-    """
-    SSRF guard. Resolves `hostname` and raises ScopeViolation if it lands on a
-    private, loopback, link-local, reserved, or cloud-metadata address.
-    Call this BEFORE making any outbound request or opening any socket to a
-    user-supplied target — this app runs as a hosted service, and without this
-    check a "domain" input of e.g. "169.254.169.254" or "localhost" would let a
-    user pivot the server into scanning its own internal network.
-    """
     try:
         infos = socket.getaddrinfo(hostname, None)
     except socket.gaierror as e:
@@ -90,14 +80,11 @@ def assert_public_host(hostname: str) -> None:
                 f"Target '{hostname}' resolves to a non-public address ({ip_str}). "
                 f"Refusing to scan internal/reserved network space."
             )
-        # Explicit cloud metadata block (169.254.169.254 is link-local so it's
-        # already caught above, but keep this for clarity/defense-in-depth)
         if ip_str == "169.254.169.254":
             raise ScopeViolation("Refusing to scan the cloud metadata endpoint.")
 
 
 def with_retry(fn: Callable, *args, retries: int = 2, backoff: float = 1.5, **kwargs):
-    """Simple retry with exponential backoff for flaky/rate-limited HTTP calls."""
     last_exc = None
     for attempt in range(retries + 1):
         try:
@@ -110,11 +97,6 @@ def with_retry(fn: Callable, *args, retries: int = 2, backoff: float = 1.5, **kw
 
 
 class TTLCache:
-    """
-    Minimal in-memory TTL cache so repeated lookups (e.g. re-rendering a
-    Streamlit page) don't burn free-tier VT/AbuseIPDB/NVD quota. Not persisted
-    across process restarts — that's fine for its purpose (burst dedup).
-    """
     def __init__(self, ttl_seconds: int = 900):
         self.ttl = ttl_seconds
         self._store: Dict[str, Any] = {}
@@ -160,25 +142,14 @@ class VulnerabilityRecord:
 
 
 def compute_risk_score(vt_malicious: int, abuse_score: int, top_cvss: float,
-                        exposed_count: int = 0, missing_headers: int = 0,
-                        risky_open_ports: int = 0) -> Dict[str, Any]:
-    """
-    Aggregate 0-100 risk score blending threat-intel reputation, worst CVE
-    severity found for the target's fingerprinted stack, and — as of this
-    fix — the actual recon findings (exposed files, missing security
-    headers, risky open ports). Previously the score only looked at
-    VT/AbuseIPDB/CVE data, so a freshly-registered or unflagged domain with
-    an exposed .env file, missing CSP/HSTS headers, or a public RDP/MySQL
-    port would still score 0/100 LOW — recon findings were being surfaced in
-    the UI but silently ignored by the score. This is a heuristic, not a
-    certified scoring methodology — surfaced as a triage aid only.
-    """
-    vt_component = min(vt_malicious * 8, 40)          # up to 40 pts
-    abuse_component = min(abuse_score * 0.3, 30)       # up to 30 pts
-    cvss_component = min((top_cvss / 10) * 30, 30)     # up to 30 pts
-    exposure_component = min(exposed_count * 6, 24)    # up to 24 pts — exposed files/backups
-    header_component = min(missing_headers * 2.5, 12.5)  # up to 12.5 pts — missing security headers
-    port_component = min(risky_open_ports * 5, 15)     # up to 15 pts — risky public ports (RDP/DB/ES)
+                       exposed_count: int = 0, missing_headers: int = 0,
+                       risky_open_ports: int = 0) -> Dict[str, Any]:
+    vt_component = min(vt_malicious * 8, 40)
+    abuse_component = min(abuse_score * 0.3, 30)
+    cvss_component = min((top_cvss / 10) * 30, 30)
+    exposure_component = min(exposed_count * 6, 24)
+    header_component = min(missing_headers * 2.5, 12.5)
+    port_component = min(risky_open_ports * 5, 15)
 
     score = round(
         vt_component + abuse_component + cvss_component +
@@ -198,9 +169,6 @@ def compute_risk_score(vt_malicious: int, abuse_score: int, top_cvss: float,
     return {"score": score, "band": band}
 
 
-# Ports that are considered risky when found open and reachable from the
-# public internet (databases, remote-admin, and commonly-unauthenticated
-# search/index services). Used to feed compute_risk_score's port_component.
 RISKY_PUBLIC_PORTS = {3389, 3306, 1433, 5432, 9200, 445, 21}
 
 
@@ -208,12 +176,6 @@ RISKY_PUBLIC_PORTS = {3389, 3306, 1433, 5432, 9200, 445, 21}
 # 0b. PRODUCTION-READINESS: INPUT VALIDATION, SESSION TIMEOUT, SCAN QUOTAS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Loose but real host/URL validator: rejects empty/whitespace-only garbage,
-# control characters, obviously-malformed input, and anything absurdly long
-# before it ever reaches a socket call, DNS resolver, or outbound HTTP
-# request. This is a UX/sanity gate, NOT a security boundary by itself —
-# assert_public_host() remains the actual SSRF guard and still runs
-# regardless of what passes here.
 _HOSTNAME_RE = re.compile(
     r'^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$'
 )
@@ -221,16 +183,6 @@ _IPV4_RE = re.compile(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$')
 
 
 def validate_target_input(raw_target: str, allow_url: bool = True) -> Optional[str]:
-    """
-    Validates a user-supplied target (domain, IP, or URL) before it is passed
-    to any recon/scan engine. Returns an error message string if invalid,
-    or None if the input looks acceptable. Deliberately permissive on valid
-    shapes (doesn't try to be a full RFC validator) but catches the classes
-    of input that would otherwise blow up downstream with a confusing stack
-    trace or silently no-op: empty input, embedded whitespace/newlines
-    (header/command injection smell), excessive length, and strings that are
-    neither a plausible hostname, IPv4 address, nor http(s) URL.
-    """
     if raw_target is None:
         return "Target is required."
     target = raw_target.strip()
@@ -262,24 +214,11 @@ def validate_target_input(raw_target: str, allow_url: bool = True) -> Optional[s
             "or http(s) URL.")
 
 
-# Default session inactivity timeout and per-operator daily active-scan
-# quota. Both are overridable via Streamlit secrets so an operator can tune
-# them per deployment without a code change. The quota counter is
-# process-local (in-memory) and resets on app restart — it's a courtesy
-# guard against accidentally hammering free-tier VT/AbuseIPDB/NVD/Groq quota
-# or a target, not a hard security control. For a durable, cross-restart
-# quota, back this with the `db` module's SQLite store instead.
 DEFAULT_SESSION_TIMEOUT_MINUTES = 30
 DEFAULT_MAX_ACTIVE_SCANS_PER_DAY = 100
 
 
 def enforce_session_timeout(timeout_minutes: int) -> bool:
-    """
-    Logs the operator out if they've been idle longer than timeout_minutes.
-    Call once near the top of main() after authentication is confirmed.
-    Returns True if the session is still valid, False if it just expired
-    (caller should stop rendering the rest of the authenticated UI).
-    """
     now = time.time()
     last_activity = st.session_state.get('last_activity_ts', now)
     if now - last_activity > timeout_minutes * 60:
@@ -292,15 +231,6 @@ def enforce_session_timeout(timeout_minutes: int) -> bool:
 
 
 def check_and_increment_scan_quota(operator: str, max_per_day: int) -> Optional[str]:
-    """
-    Lightweight per-operator, per-day active-scan counter to slow down
-    accidental quota-burning loops (e.g. someone mashing 'Launch' in a
-    while-loop-style testing session) against VT/AbuseIPDB/NVD/Groq or
-    against the target itself. Returns an error message if the operator is
-    over quota (in which case the caller should NOT run the scan and should
-    NOT count it), or None if the scan is allowed (in which case the count
-    has already been incremented).
-    """
     today = datetime.now().strftime('%Y-%m-%d')
     quota_key = 'scan_quota'
     quota_state = st.session_state.get(quota_key, {})
@@ -322,7 +252,6 @@ def check_and_increment_scan_quota(operator: str, max_per_day: int) -> Optional[
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class SubdomainEnumEngine:
-    """Free-tier subdomain enumeration via crt.sh certificate transparency logs."""
     @staticmethod
     def enumerate(domain: str, limit: int = 50) -> List[str]:
         clean = domain.replace('https://', '').replace('http://', '').split('/')[0]
@@ -358,7 +287,6 @@ class BugBountyReconEngine:
             else:
                 target_url = target
 
-            # SSRF guard — refuse to touch internal/reserved/metadata addresses
             assert_public_host(clean_target)
 
             for rtype in ['A', 'AAAA', 'MX', 'TXT', 'NS', 'SOA']:
@@ -394,6 +322,18 @@ class BugBountyReconEngine:
 
             report['technologies'] = list(set(report['technologies']))
 
+            cookie_findings = []
+            for ck in resp.cookies:
+                samesite = ck.get_nonstandard_attr('SameSite') or ck.get_nonstandard_attr('samesite')
+                httponly = bool(ck.has_nonstandard_attr('HttpOnly') or ck.has_nonstandard_attr('httponly'))
+                cookie_findings.append({
+                    'name': ck.name,
+                    'secure': bool(ck.secure),
+                    'httponly': httponly,
+                    'samesite': samesite or 'Not set',
+                })
+            report['cookies'] = cookie_findings
+
             fuzz_paths = [
                 '/.env', '/robots.txt', '/sitemap.xml', '/git/config',
                 '/backup.zip', '/api/v1/users', '/swagger.ui', '/phpinfo.php',
@@ -403,30 +343,29 @@ class BugBountyReconEngine:
             ]
 
             base_origin = f"{urllib.parse.urlparse(target_url).scheme}://{urllib.parse.urlparse(target_url).netloc}"
+            probe_headers = dict(session.headers)
 
-            seen_paths = set()
-            for path in fuzz_paths:
-                if path in seen_paths:
-                    continue
-                seen_paths.add(path)
+            def _fuzz_one(path):
                 test_url = base_origin + path
                 try:
-                    p_resp = session.get(test_url, timeout=3, verify=False)
+                    p_resp = requests.get(test_url, timeout=3, verify=False, headers=probe_headers)
                     if p_resp.status_code in [200, 403, 401]:
                         p_text = p_resp.text.lower()
-
-                        # Filter out Streamlit soft-404 pages
                         if 'streamlit' in p_text and 'root' in p_text and len(p_text) > 500:
                             if abs(len(p_text) - len(base_homepage_text)) < 200:
-                                continue
-
+                                return None
                         if p_resp.status_code == 200 and len(p_text) > 10:
                             if any(err in p_text for err in ["not found", "404 page", "does not exist", "object not found"]):
-                                continue
-
-                        report['exposed_files'].append({'path': path, 'status': p_resp.status_code, 'size': len(p_resp.text)})
+                                return None
+                        return {'path': path, 'status': p_resp.status_code, 'size': len(p_resp.text)}
                 except Exception:
                     pass
+                return None
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as fuzz_pool:
+                for result in fuzz_pool.map(_fuzz_one, fuzz_paths):
+                    if result:
+                        report['exposed_files'].append(result)
         except ScopeViolation as e:
             report['error'] = f"Scope violation: {e}"
             report['blocked'] = True
@@ -436,18 +375,12 @@ class BugBountyReconEngine:
 
 
 class AutonomousAgentExecutor:
-    """Autonomous AI-Driven Agentic Loop for deep target reconnaissance and vulnerability triage."""
     @staticmethod
     def _call_groq(messages: List[Dict[str, str]], groq_key: str, max_tokens: int = 1600, temperature: float = 0.4) -> str:
-        """
-        Calls Groq chat completions and, if the model was cut off by the token
-        budget (finish_reason == 'length'), asks it to continue rather than
-        silently returning a truncated report.
-        """
         headers = {'Authorization': f'Bearer {groq_key}', 'Content-Type': 'application/json'}
         full_text = ""
         convo = list(messages)
-        for _ in range(2):  # allow one continuation pass
+        for _ in range(2):
             payload = {
                 'model': 'openai/gpt-oss-120b',
                 'messages': convo,
@@ -455,7 +388,7 @@ class AutonomousAgentExecutor:
                 'max_tokens': max_tokens,
             }
             resp = with_retry(requests.post, "https://api.groq.com/openai/v1/chat/completions",
-                               json=payload, headers=headers, timeout=30)
+                              json=payload, headers=headers, timeout=30)
             if resp.status_code != 200:
                 return full_text + f"\n[AI Agent LLM Error: {resp.status_code} - {resp.text[:300]}]"
             choice = resp.json()['choices'][0]
@@ -474,7 +407,6 @@ class AutonomousAgentExecutor:
         agent_log = []
         agent_log.append(f"[*] AI Agent initialized for autonomous target scope: {target}")
 
-        # Step 1: Deep Recon Execution
         recon_data = BugBountyReconEngine.deep_recon(target)
         if recon_data.get('blocked'):
             agent_log.append(f"[!] Recon blocked: {recon_data.get('error')}")
@@ -493,9 +425,6 @@ class AutonomousAgentExecutor:
         subdomains = SubdomainEnumEngine.enumerate(target)
         agent_log.append(f"[+] Certificate-transparency subdomain enumeration found {len(subdomains)} host(s).")
 
-        # Step 1b: Infrastructure audit (ports/headers) folded into the
-        # autonomous cycle so its findings feed the aggregate risk score
-        # instead of only being visible in the separate manual audit tab.
         infra_audit = AdvancedReconEngine.audit_infrastructure(target)
         if infra_audit.get('blocked'):
             agent_log.append(f"[!] Infrastructure audit blocked: {infra_audit.get('error')}")
@@ -503,7 +432,6 @@ class AutonomousAgentExecutor:
         else:
             agent_log.append(f"[+] Infrastructure audit found {len(infra_audit.get('ports', []))} open port(s).")
 
-        # Step 2: AI-Powered Context Evaluation & Authorized Security Analysis
         ai_analysis = "AI analysis skipped or key missing."
         if groq_key:
             prompt_context = f"""
@@ -538,31 +466,6 @@ class AutonomousAgentExecutor:
 
 
 class NVDIntelligenceClient:
-    """
-    NVD client with CPE-aware relevance filtering.
-
-    v18.0 fix: a plain keyword search for "React" matched CVEs for unrelated
-    hardware (ABB WiFi Logger) purely because "React" appeared inside an
-    unrelated product's description text. We fixed that by checking the CVE's
-    structured `configurations` (CPE match strings) instead of description
-    text — but that surfaced a second, subtler problem: ABB's own official
-    CPE *product* string for that hardware is literally
-    "wifi_logger_card_for_react", so a plain substring check against the CPE
-    product field ALSO matches it — the word "react" is a real, present token
-    in an entirely unrelated vendor's official product name. Two different
-    things coincidentally share an exact word in NVD's own dictionary; no
-    amount of smarter string matching alone resolves that ambiguity.
-
-    v18.1 fix: for keywords known to be commonly-overloaded generic tech
-    names (a JS framework, a CDN, a webserver name that's also an English
-    word), we additionally require the CPE *vendor* field to match a known
-    authoritative vendor for that keyword before calling it 'cpe' confidence.
-    ABB is not Facebook, so this correctly reclassifies that hit back down to
-    'keyword' (unconfirmed) instead of a false 'cpe' (confirmed) match.
-    """
-
-    # Known-ambiguous keywords -> the CPE vendor token(s) that actually own
-    # that product name. Extend this as new false-positive classes turn up.
     VENDOR_ALLOWLIST = {
         "react": {"facebook", "reactjs", "react_project"},
         "express": {"expressjs", "openjs_foundation", "openjsf"},
@@ -586,14 +489,10 @@ class NVDIntelligenceClient:
             for node in config.get('nodes', []):
                 for match in node.get('cpeMatch', []):
                     criteria = match.get('criteria', '').lower()
-                    # CPE format: cpe:2.3:a:vendor:product:version:...
                     parts = criteria.split(':')
                     if len(parts) > 4:
                         vendor, product = parts[3], parts[4]
                         if allowed_vendors is not None:
-                            # Ambiguous keyword — the product string alone
-                            # isn't trustworthy; require the authoritative
-                            # vendor too.
                             if vendor in allowed_vendors and (kw == product or kw in product):
                                 return True
                         else:
@@ -602,12 +501,6 @@ class NVDIntelligenceClient:
         return False
 
     def search_cve(self, keyword: str, max_results: int = 15, min_confidence: str = "any") -> List[VulnerabilityRecord]:
-        """
-        min_confidence: "any" keeps both cpe+keyword matches (default, matches
-        old behavior for exploratory search); "cpe" restricts to structurally
-        confirmed product matches — use this for autonomous/unattended reports
-        where false positives are costly.
-        """
         vulnerabilities = []
         seen_cves = set()
         try:
@@ -618,10 +511,6 @@ class NVDIntelligenceClient:
 
             response = with_retry(requests.get, self.base_url, params=params, headers=headers, timeout=12)
             if response.status_code in (403, 429):
-                # NVD's unauthenticated tier returns 403 almost as often as
-                # 429 once you're rate-limited — treat both as "back off",
-                # not as a hard/permanent error, so callers can retry later
-                # instead of assuming the keyword search itself is invalid.
                 logger.warning(f"NVD rate limit/forbidden ({response.status_code}) for keyword '{keyword}'.")
             elif response.status_code == 200:
                 data = response.json()
@@ -737,7 +626,7 @@ class ThreatIntelService:
                     headers = {'Key': self.abuse_key, 'Accept': 'application/json'}
                     params = {'ipAddress': indicator, 'maxAgeInDays': 90, 'verbose': True}
                     resp = with_retry(requests.get, "https://api.abuseipdb.com/api/v2/check",
-                                       headers=headers, params=params, timeout=10)
+                                      headers=headers, params=params, timeout=10)
                     if resp.status_code == 200:
                         abuse_json = resp.json()
                         results['abuse_raw'] = abuse_json
@@ -769,7 +658,6 @@ class AdvancedReconEngine:
         try:
             clean_domain = domain.replace('https://', '').replace('http://', '').split('/')[0]
 
-            # SSRF guard — refuse to port-scan/connect to internal/reserved addresses
             assert_public_host(clean_domain)
 
             for rtype in ['A', 'AAAA', 'MX', 'TXT', 'NS', 'SOA']:
@@ -838,6 +726,46 @@ class AdvancedReconEngine:
                     report['headers'][h] = resp.headers.get(h, 'MISSING')
             except Exception as e:
                 report['headers']['error'] = str(e)
+
+            try:
+                probe_origin = "https://mhzaly-cors-probe.invalid"
+                cors_resp = with_retry(requests.get, f"https://{clean_domain}", timeout=5, verify=False,
+                                       headers={"Origin": probe_origin})
+                acao = cors_resp.headers.get("Access-Control-Allow-Origin")
+                acac = cors_resp.headers.get("Access-Control-Allow-Credentials", "").lower() == "true"
+                reflects = acao == probe_origin
+                wildcard_with_creds = acao == "*" and acac
+                report['cors'] = {
+                    "checked": True,
+                    "acao": acao or "not set",
+                    "allow_credentials": acac,
+                    "misconfigured": bool(reflects or wildcard_with_creds),
+                    "detail": ("reflects an arbitrary Origin back" if reflects else
+                               "allows '*' together with credentials" if wildcard_with_creds else
+                               "no obvious misconfiguration"),
+                }
+            except Exception as e:
+                report['cors'] = {"checked": False, "error": str(e)}
+
+            spf_record, dmarc_record = None, None
+            try:
+                for r in (report['dns'].get('TXT') or []):
+                    txt = str(r).strip('"')
+                    if txt.lower().startswith('v=spf1'):
+                        spf_record = txt
+                        break
+            except Exception:
+                pass
+            try:
+                dmarc_answers = dns.resolver.resolve(f"_dmarc.{clean_domain}", 'TXT')
+                for r in dmarc_answers:
+                    txt = str(r).strip('"')
+                    if 'v=dmarc1' in txt.lower():
+                        dmarc_record = txt
+                        break
+            except Exception:
+                pass
+            report['email_security'] = {"spf": spf_record, "dmarc": dmarc_record}
         except ScopeViolation as e:
             report['error'] = f"Scope violation: {e}"
             report['blocked'] = True
@@ -848,16 +776,307 @@ class AdvancedReconEngine:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 3. STREAMLIT ENTERPRISE UI (MODERN SaaS CSS & PURPLE TEAM HUB)
+# 2b. AI SECURITY ENGINEER — LOCAL HUMAN-ANALYST NARRATIVE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class AnalystNarrator:
+    OPENERS = [
+        "I went through {target} today using the standard purple-team checks — here's what I found.",
+        "Here's my read on {target} after the usual recon, infra, and CVE correlation passes.",
+        "I ran the full sweep against {target}. Summary below, tab-by-tab detail in the rest of the report.",
+    ]
+
+    def __init__(self, target: str, recon: Dict[str, Any], infra: Dict[str, Any],
+                 subdomains: List[str], cves: List[VulnerabilityRecord],
+                 threat_intel: Dict[str, Any], risk: Dict[str, Any]):
+        self.target = target
+        self.recon = recon or {}
+        self.infra = infra or {}
+        self.subdomains = subdomains or []
+        self.cves = cves or []
+        self.ti = threat_intel or {}
+        self.risk = risk or {}
+
+    def _tech_paragraph(self) -> str:
+        techs = self.recon.get('technologies', [])
+        server = self.recon.get('server', 'Hidden / Unknown')
+        if not techs and server in (None, '', 'Hidden / Unknown'):
+            return "The server didn't disclose much about its stack — no Server header and no obvious framework fingerprints in the response body."
+        bits = []
+        if server and server != 'Hidden / Unknown':
+            bits.append(f"the Server header reports `{server}`")
+        if techs:
+            bits.append(f"fingerprinting picked up: {', '.join(techs)}")
+        return "On the stack side, " + "; ".join(bits) + "."
+
+    def _exposure_paragraph(self) -> str:
+        exposed = self.recon.get('exposed_files', [])
+        if not exposed:
+            return "None of the common sensitive/backup paths I fuzzed came back exposed — good sign."
+        names = ", ".join(f"`{e['path']}` ({e['status']})" for e in exposed[:8])
+        lead = random.choice([
+            "This is the part I'd fix first:",
+            "Biggest actionable item here:",
+        ])
+        return f"{lead} {len(exposed)} path(s) responded live: {names}. Worth confirming by hand and locking down access control on these."
+
+    def _headers_paragraph(self) -> str:
+        headers = self.infra.get('headers', {})
+        if not headers or 'error' in headers:
+            return f"I couldn't grab security headers to grade ({headers.get('error', 'no live HTTPS response')})."
+        missing = [h for h, v in headers.items() if v == 'MISSING']
+        if not missing:
+            return "Security headers look complete — HSTS, CSP, and the rest of the set I check for are all present."
+        return (f"Header hardening has gaps: {len(missing)} of {len(headers)} checked headers are missing "
+                f"({', '.join(missing)}). These are cheap to add at the reverse-proxy/edge layer.")
+
+    def _ports_paragraph(self) -> str:
+        ports = self.infra.get('ports', [])
+        if not ports:
+            return "The port sweep across common services didn't find anything open beyond what's expected."
+        names = ", ".join(f"{p['port']}/{p['service']}" for p in ports)
+        risky = [p for p in ports if p['port'] in RISKY_PUBLIC_PORTS]
+        base = f"Live TCP connect scan found {len(ports)} open port(s): {names}."
+        if risky:
+            risky_names = ", ".join(f"{p['port']}/{p['service']}" for p in risky)
+            base += f" I'd flag {risky_names} specifically — databases/remote-admin ports reachable from the public internet are worth restricting to a VPN or allow-list."
+        return base
+
+    def _ssl_paragraph(self) -> str:
+        ssl_res = self.infra.get('ssl', {})
+        if ssl_res.get('valid'):
+            details = ssl_res.get('details', {})
+            return f"TLS certificate is valid, issued by {details.get('issuer', {}).get('organizationName', 'an unlisted CA')}, expiring {details.get('not_after', 'unknown')}."
+        return f"I couldn't validate TLS from here ({ssl_res.get('error', 'no HTTPS response')}) — reporting it as unverified rather than assuming it's fine."
+
+    def _subdomains_paragraph(self) -> str:
+        if not self.subdomains:
+            return "Certificate-transparency logs didn't surface any additional subdomains."
+        return (f"Certificate-transparency logs turned up {len(self.subdomains)} historical subdomain(s) — "
+                f"worth a look for forgotten staging/dev environments, a common source of unintended exposure.")
+
+    def _cve_paragraph(self) -> str:
+        if not self.cves:
+            return "No CVEs cleared the CPE/keyword relevance filter for the detected stack — either nothing matched, or the correlation was skipped because no specific software/version was identifiable."
+        cpe_confirmed = [v for v in self.cves if v.match_confidence == 'cpe']
+        top = max(self.cves, key=lambda v: v.cvss_score)
+        conf_note = (f"{len(cpe_confirmed)} of them are CPE-confirmed against the actual product record (higher confidence), "
+                     f"the rest are text-keyword matches only and need manual verification." if cpe_confirmed else
+                     "all of these are text-keyword matches only (no CPE confirmation), so treat them as leads, not confirmed findings.")
+        return (f"NVD correlation returned {len(self.cves)} advisory/advisories worth a look, topped by {top.cve_id} "
+                f"(CVSS {top.cvss_score}, {top.severity}). {conf_note}")
+
+    def _threat_intel_paragraph(self) -> str:
+        vt = self.ti.get('vt_summary', {})
+        abuse = self.ti.get('abuse_summary', {})
+        parts = []
+        if vt and 'error' not in vt:
+            mal = vt.get('malicious', 0)
+            parts.append(f"VirusTotal shows {mal} vendor(s) flagging it as malicious." if mal else "VirusTotal reputation is clean.")
+        if abuse and 'error' not in abuse and abuse.get('score', 0) is not None and (abuse.get('reports') or abuse.get('score')):
+            parts.append(f"AbuseIPDB confidence score is {abuse.get('score', 0)}/100 across {abuse.get('reports', 0)} report(s).")
+        if not parts:
+            return "Threat-intel reputation checks either weren't configured (VT/AbuseIPDB keys) or returned nothing — that section is inconclusive rather than 'clean'."
+        return " ".join(parts)
+
+    def _cookies_paragraph(self) -> str:
+        cookies = self.recon.get('cookies', [])
+        if not cookies:
+            return ""
+        weak = [c for c in cookies if not c['secure'] or not c['httponly']]
+        if not weak:
+            return f"All {len(cookies)} cookie(s) set by the app have Secure and HttpOnly flags — good practice."
+        names = ", ".join(c['name'] for c in weak)
+        return (f"{len(weak)} of {len(cookies)} cookie(s) are missing Secure and/or HttpOnly flags ({names}) — "
+                f"that makes them more exposed to interception or client-side script access than they need to be.")
+
+    def _cors_paragraph(self) -> str:
+        cors = self.infra.get('cors', {})
+        if not cors.get('checked'):
+            return ""
+        if cors.get('misconfigured'):
+            return f"CORS looks misconfigured: the response {cors.get('detail')}, which can let an attacker-controlled page read authenticated responses cross-origin."
+        return "CORS headers look reasonable — the server didn't blindly reflect an arbitrary Origin back."
+
+    def _email_security_paragraph(self) -> str:
+        es = self.infra.get('email_security', {})
+        if not es:
+            return ""
+        spf, dmarc = es.get('spf'), es.get('dmarc')
+        if spf and dmarc:
+            return "Email anti-spoofing is in place — both SPF and DMARC records are published."
+        missing = []
+        if not spf:
+            missing.append("SPF")
+        if not dmarc:
+            missing.append("DMARC")
+        return f"No {' or '.join(missing)} record found for this domain — that's a gap in email anti-spoofing defenses if this domain sends mail."
+
+    def build(self) -> str:
+        lines = [random.choice(self.OPENERS).format(target=self.target), ""]
+        for para in [self._exposure_paragraph(), self._tech_paragraph(), self._headers_paragraph(),
+                     self._cookies_paragraph(), self._cors_paragraph(), self._ssl_paragraph(),
+                     self._email_security_paragraph(), self._ports_paragraph(), self._subdomains_paragraph(),
+                     self._cve_paragraph(), self._threat_intel_paragraph()]:
+            if para:
+                lines.append(para)
+                lines.append("")
+        lines.append(f"**Bottom line:** aggregate risk score is {self.risk.get('score', '?')}/100 ({self.risk.get('band', 'UNKNOWN')}).")
+        lines.append("")
+        lines.append("_Automated preliminary assessment — verify exposed paths and CVE matches by hand before acting on them, "
+                     "and don't treat a clean threat-intel/CVE result as a guarantee of no risk._")
+        return "\n".join(lines)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 2c. EXECUTIVE SUMMARY, PDF EXPORT & SCAN HISTORY
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def build_executive_summary(recon: Dict[str, Any], infra: Dict[str, Any],
+                           cve_res: List[VulnerabilityRecord]) -> Dict[str, int]:
+    counts = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
+    for v in cve_res:
+        sev = (v.severity or "").upper()
+        if sev in counts:
+            counts[sev] += 1
+        elif v.cvss_score >= 9:
+            counts["Critical"] += 1
+        elif v.cvss_score >= 7:
+            counts["High"] += 1
+        elif v.cvss_score >= 4:
+            counts["Medium"] += 1
+        else:
+            counts["Low"] += 1
+
+    if recon.get('exposed_files'):
+        counts["High"] += len(recon['exposed_files'])
+
+    weak_cookies = [c for c in recon.get('cookies', []) if not c['secure'] or not c['httponly']]
+    if weak_cookies:
+        counts["Medium"] += len(weak_cookies)
+
+    if infra.get('cors', {}).get('misconfigured'):
+        counts["High"] += 1
+
+    missing_headers = sum(1 for v in infra.get('headers', {}).values() if v == 'MISSING')
+    if missing_headers:
+        counts["Medium"] += missing_headers
+
+    risky_ports = sum(1 for p in infra.get('ports', []) if p.get('port') in RISKY_PUBLIC_PORTS)
+    if risky_ports:
+        counts["High"] += risky_ports
+
+    es = infra.get('email_security', {})
+    if es and not (es.get('spf') and es.get('dmarc')):
+        counts["Low"] += 1
+
+    return counts
+
+
+def generate_pdf_report(target: str, risk: Dict[str, Any], summary_counts: Dict[str, int],
+                        report_text: str, recon: Dict[str, Any], infra: Dict[str, Any],
+                        cve_res: List[VulnerabilityRecord]) -> Optional[bytes]:
+    if not FPDF_AVAILABLE:
+        return None
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.multi_cell(0, 10, "AI Security Engineer — Assessment Report")
+    pdf.set_font("Helvetica", "", 10)
+    pdf.multi_cell(0, 6, f"Target: {target}")
+    pdf.multi_cell(0, 6, f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    pdf.multi_cell(0, 6, f"Aggregate Risk: {risk.get('score', '?')}/100 ({risk.get('band', 'UNKNOWN')})")
+    pdf.ln(4)
+
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.multi_cell(0, 8, "Executive Summary")
+    pdf.set_font("Helvetica", "", 10)
+    for sev, count in summary_counts.items():
+        pdf.multi_cell(0, 6, f"  {sev}: {count}")
+    pdf.ln(4)
+
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.multi_cell(0, 8, "Analyst Write-Up")
+    pdf.set_font("Helvetica", "", 10)
+    clean_text = report_text.encode('latin-1', 'replace').decode('latin-1')
+    for line in clean_text.split("\n"):
+        pdf.multi_cell(0, 6, line if line.strip() else " ")
+
+    if cve_res:
+        pdf.ln(4)
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.multi_cell(0, 8, "CVE Findings")
+        pdf.set_font("Helvetica", "", 9)
+        for v in cve_res:
+            line = f"{v.cve_id} | CVSS {v.cvss_score} ({v.severity}) | match: {v.match_confidence}"
+            pdf.multi_cell(0, 6, line.encode('latin-1', 'replace').decode('latin-1'))
+
+    out = pdf.output(dest='S')
+    if isinstance(out, str):
+        out = out.encode('latin-1', 'replace')
+    return bytes(out)
+
+
+AI_SEC_ENGINEER_DB_PATH = "ai_security_engineer_history.db"
+
+
+def _ai_sec_db_connect() -> sqlite3.Connection:
+    conn = sqlite3.connect(AI_SEC_ENGINEER_DB_PATH)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS scan_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            target TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            risk_score REAL,
+            risk_band TEXT,
+            open_ports INTEGER,
+            exposed_paths INTEGER,
+            cve_count INTEGER,
+            operator TEXT
+        )
+    """)
+    return conn
+
+
+def save_ai_security_engineer_scan(target: str, risk: Dict[str, Any], open_ports: int,
+                                   exposed_count: int, cve_count: int, operator: str) -> None:
+    try:
+        conn = _ai_sec_db_connect()
+        conn.execute(
+            "INSERT INTO scan_history (target, timestamp, risk_score, risk_band, open_ports, exposed_paths, cve_count, operator) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (target, datetime.now().isoformat(), risk.get('score'), risk.get('band'),
+             open_ports, exposed_count, cve_count, operator),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.warning(f"Could not save AI Security Engineer scan history: {e}")
+
+
+def get_ai_security_engineer_history(target: Optional[str] = None, limit: int = 20) -> List[Dict[str, Any]]:
+    try:
+        conn = _ai_sec_db_connect()
+        conn.row_factory = sqlite3.Row
+        if target:
+            cur = conn.execute("SELECT * FROM scan_history WHERE target = ? ORDER BY id DESC LIMIT ?", (target, limit))
+        else:
+            cur = conn.execute("SELECT * FROM scan_history ORDER BY id DESC LIMIT ?", (limit,))
+        rows = [dict(r) for r in cur.fetchall()]
+        conn.close()
+        return rows
+    except Exception as e:
+        logger.warning(f"Could not read AI Security Engineer scan history: {e}")
+        return []
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 3. STREAMLIT ENTERPRISE UI
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def authorization_gate(key_suffix: str) -> bool:
-    """
-    Renders a mandatory authorization checkbox before any active scan module
-    runs. Doesn't verify legal authorization (can't), but forces the operator
-    to explicitly attest to it every time — standard practice for bug-bounty
-    tooling and a paper trail if the platform is ever misused.
-    """
     return st.checkbox(
         "I confirm I am authorized to test this target (owner, bug-bounty program scope, or written permission).",
         key=f"authz_{key_suffix}",
@@ -865,7 +1084,6 @@ def authorization_gate(key_suffix: str) -> bool:
 
 
 def render_autonomous_tab():
-    """Renders the Autonomous SOC live monitoring tab from dashboard_tab.py logic."""
     st.markdown("# Autonomous SOC — Live Monitoring")
     st.markdown(
         "<p style='color:#9ca3af;'>Background scheduler scans these targets on "
@@ -941,7 +1159,7 @@ def render_autonomous_tab():
     if findings:
         fdf = pd.DataFrame(findings)[["target", "category", "severity", "summary", "first_seen", "last_seen"]]
         sev_filter = st.multiselect("Filter by severity", ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"],
-                                     default=["CRITICAL", "HIGH", "MEDIUM"])
+                                    default=["CRITICAL", "HIGH", "MEDIUM"])
         if sev_filter:
             fdf = fdf[fdf["severity"].isin(sev_filter)]
         st.dataframe(fdf, use_container_width=True)
@@ -965,7 +1183,6 @@ def main():
         initial_sidebar_state="expanded"
     )
 
-    # Modern SaaS Dark Glassmorphism Styling Injection
     st.markdown("""
         <style>
         .stApp { background-color: #0b0f19; color: #f3f4f6; font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; }
@@ -1020,7 +1237,6 @@ def main():
             password = st.text_input("Operator Password", type="password")
 
             if st.button("Authenticate Suite", use_container_width=True):
-                # Constant-time comparison to avoid timing side-channels on the password check
                 user_ok = hmac.compare_digest(username, correct_user)
                 pass_ok = hmac.compare_digest(password, correct_pass)
                 if user_ok and pass_ok:
@@ -1039,9 +1255,6 @@ def main():
                         st.error("Authentication failed: Invalid credentials.")
         return
 
-    # Auto-logout idle operators. Timeout is configurable via secrets so a
-    # deployment can tighten/loosen it without a code change; defaults to
-    # DEFAULT_SESSION_TIMEOUT_MINUTES if unset.
     session_timeout_minutes = int(st.secrets.get("SESSION_TIMEOUT_MINUTES", DEFAULT_SESSION_TIMEOUT_MINUTES))
     if not enforce_session_timeout(session_timeout_minutes):
         return
@@ -1063,15 +1276,12 @@ def main():
             "Purple Team Hub Menu",
             [
                 "Command Telemetry Center",
+                "AI Security Engineer",
                 "Autonomous SOC (Live DB)",
                 "Autonomous AI-Agent Red/Blue Pipeline",
                 "AI Security Chatbot",
                 "Blue Team SOC Log & SIEM Simulator",
                 "Automated Sigma Rule Generator",
-                "Bug Bounty Recon & Fuzzing",
-                "Network Infrastructure Audit",
-                "Enterprise NVD Intelligence",
-                "Threat Intel & IOC Triage",
                 "Offensive Encoder & Hasher",
                 "Activity History & Logs",
                 "Platform Configuration"
@@ -1092,12 +1302,156 @@ def main():
         c3.metric("Groq AI Engine", "Online" if groq_key else "Offline", "openai/gpt-oss-120b")
         c4.metric("SQLite DB", "Connected", "Active")
 
+    elif module == "AI Security Engineer":
+        st.markdown("# 🧠 AI Security Engineer")
+        st.markdown(
+            "<p style='color: #9ca3af;'>This is now the single place for all real security-engineer work...</p>",
+            unsafe_allow_html=True,
+        )
+
+        ai_target = st.text_input("Target Domain or IP", placeholder="e.g., target-domain.com", key="ai_sec_eng_target")
+        strict_cve = st.checkbox("Strict CVE matching (CPE-confirmed only)", value=True, key="ai_sec_eng_strict")
+        with st.expander("⚙️ Advanced options"):
+            manual_nvd_keyword = st.text_input("Override NVD search keyword", key="ai_sec_eng_nvd_kw")
+            manual_ti_indicator = st.text_input("Override threat-intel indicator", key="ai_sec_eng_ti_ind")
+        authorized = authorization_gate("ai_sec_engineer")
+
+        if st.button("🚀 Run AI Security Engineer", use_container_width=True, disabled=not authorized):
+            validation_error = validate_target_input(ai_target) if ai_target else "Please specify a target."
+            quota_error = check_and_increment_scan_quota(st.session_state.user, max_scans_per_day) if not validation_error else None
+
+            if quota_error:
+                st.error(quota_error)
+            elif validation_error:
+                st.warning(validation_error)
+            else:
+                clean_target = ai_target.replace('https://', '').replace('http://', '').split('/')[0]
+                ti_indicator = manual_ti_indicator.strip() if manual_ti_indicator.strip() else clean_target
+
+                with st.spinner(f"Running recon, infra audit, subdomains, and threat intel on {ai_target} in parallel..."):
+                    ti_service = ThreatIntelService(vt_key, abuse_key, cache=shared_cache)
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as top_pool:
+                        fut_recon = top_pool.submit(BugBountyReconEngine.deep_recon, ai_target)
+                        fut_infra = top_pool.submit(AdvancedReconEngine.audit_infrastructure, ai_target)
+                        fut_subs = top_pool.submit(SubdomainEnumEngine.enumerate, ai_target)
+                        fut_ti = top_pool.submit(ti_service.triage_indicator, ti_indicator)
+                        recon = fut_recon.result()
+                        infra = fut_infra.result()
+                        subs = fut_subs.result()
+                        ti_res = fut_ti.result()
+
+                if recon.get('blocked'):
+                    st.error(f"Scan blocked by scope guard: {recon.get('error')}")
+                else:
+                    with st.spinner("Correlating CVEs against the fingerprinted stack..."):
+                        tech_stack = recon.get('technologies', [])
+                        AMBIGUOUS_GENERIC_TECH = {"react", "express", "cloudflare"}
+                        specific_techs = [t for t in tech_stack if t.lower() not in AMBIGUOUS_GENERIC_TECH]
+                        domain_keyword = clean_target.split('.')[0] if '.' in clean_target else clean_target
+                        auto_nvd_term = specific_techs[0] if specific_techs else domain_keyword
+                        nvd_query_term = manual_nvd_keyword.strip() if manual_nvd_keyword.strip() else auto_nvd_term
+
+                        nvd = NVDIntelligenceClient(nvd_key)
+                        min_conf = "cpe" if strict_cve else "any"
+                        cve_res = nvd.search_cve(nvd_query_term, max_results=8, min_confidence=min_conf)
+                        if not cve_res and not manual_nvd_keyword.strip() and domain_keyword != nvd_query_term:
+                            cve_res = nvd.search_cve(domain_keyword, max_results=8, min_confidence=min_conf)
+
+                    top_cvss = max([v.cvss_score for v in cve_res], default=0.0)
+                    missing_headers = sum(1 for v in infra.get('headers', {}).values() if v == 'MISSING')
+                    risky_ports = sum(1 for p in infra.get('ports', []) if p.get('port') in RISKY_PUBLIC_PORTS)
+                    exposed_count = len(recon.get('exposed_files', []))
+                    open_ports_count = len(infra.get('ports', []))
+
+                    risk = compute_risk_score(
+                        ti_res['vt_summary']['malicious'], ti_res['abuse_summary']['score'], top_cvss,
+                        exposed_count=exposed_count, missing_headers=missing_headers, risky_open_ports=risky_ports,
+                    )
+                    summary_counts = build_executive_summary(recon, infra, cve_res)
+
+                    narrator = AnalystNarrator(clean_target, recon, infra, subs, cve_res, ti_res, risk)
+                    local_report = narrator.build()
+                    polished = None
+                    if groq_key:
+                        try:
+                            polished = AutonomousAgentExecutor._call_groq(
+                                [
+                                    {'role': 'system', 'content': "You are a senior security engineer. Rewrite the following real findings into clear, professional, conversational prose. Do NOT invent any new findings, numbers, CVEs, or claims beyond what is given — only rephrase and organize."},
+                                    {'role': 'user', 'content': local_report}
+                                ],
+                                groq_key, max_tokens=1200, temperature=0.3,
+                            )
+                        except Exception:
+                            polished = None
+                    report_text = polished or local_report
+                    report_source = "Local analyst engine + LLM polish" if polished else "Local analyst engine (no LLM key configured)"
+
+                    save_ai_security_engineer_scan(clean_target, risk, open_ports_count, exposed_count,
+                                                   len(cve_res), st.session_state.user)
+
+                    st.success("AI Security Engineer run complete — every finding above is from a live check.")
+
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("Aggregate Risk", f"{risk['score']}/100", risk['band'])
+                    m2.metric("Open Ports", open_ports_count)
+                    m3.metric("Exposed Paths", exposed_count)
+                    m4.metric("CVEs (filtered)", len(cve_res))
+
+                    st.markdown("### Executive Summary")
+                    s1, s2, s3, s4 = st.columns(4)
+                    s1.metric("🔴 Critical", summary_counts["Critical"])
+                    s2.metric("🟠 High", summary_counts["High"])
+                    s3.metric("🟡 Medium", summary_counts["Medium"])
+                    s4.metric("🟢 Low", summary_counts["Low"])
+
+                    st.markdown("### Analyst Write-Up")
+                    st.caption(f"Source: {report_source}")
+                    st.markdown(report_text)
+
+                    report_markdown = f"""# AI SECURITY ENGINEER REPORT
+**Target:** `{clean_target}`
+**Timestamp:** `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`
+**Risk:** {risk['score']}/100 ({risk['band']})
+**Source:** {report_source}
+
+## Executive Summary
+- Critical: {summary_counts['Critical']}
+- High: {summary_counts['High']}
+- Medium: {summary_counts['Medium']}
+- Low: {summary_counts['Low']}
+
+{report_text}
+"""
+                    dcol1, dcol2, dcol3 = st.columns(3)
+                    with dcol1:
+                        st.download_button("📥 Download Report (.md)", data=report_markdown,
+                                           file_name=f"ai_security_engineer_{clean_target}.md",
+                                           mime="text/markdown", use_container_width=True)
+                    with dcol2:
+                        st.download_button("📥 Download Findings (.json)", data=json.dumps({
+                            "target": clean_target, "risk": risk, "summary_counts": summary_counts,
+                            "recon": recon, "infra": infra,
+                            "subdomains": subs, "cves": [v.to_dict() for v in cve_res], "threat_intel": ti_res,
+                        }, indent=2, default=str), file_name=f"ai_security_engineer_{clean_target}.json",
+                            mime="application/json", use_container_width=True)
+                    with dcol3:
+                        if FPDF_AVAILABLE:
+                            pdf_bytes = generate_pdf_report(clean_target, risk, summary_counts, report_text,
+                                                            recon, infra, cve_res)
+                            st.download_button("📥 Download Report (.pdf)", data=pdf_bytes,
+                                               file_name=f"ai_security_engineer_{clean_target}.pdf",
+                                               mime="application/pdf", use_container_width=True)
+                        else:
+                            st.caption("PDF export needs `fpdf2` — add it to requirements.txt to enable this button.")
+        elif not authorized:
+            st.caption("Check the authorization box above to enable scanning.")
+
     elif module == "Autonomous SOC (Live DB)":
         render_autonomous_tab()
 
     elif module == "Autonomous AI-Agent Red/Blue Pipeline":
         st.markdown("# Fully Autonomous AI-Driven Bug Bounty & Purple Team Agent")
-        st.markdown("<p style='color: #9ca3af;'>Give target scope. The Autonomous AI Agent takes complete control, performing deep iterative recon, filtering duplicate endpoints/CVEs, executing analysis, and synthesizing professional security assessment reports.</p>", unsafe_allow_html=True)
+        st.markdown("<p style='color: #9ca3af;'>Give target scope. The Autonomous AI Agent takes complete control...</p>", unsafe_allow_html=True)
 
         pipeline_target = st.text_input("Target Domain, IP Address, or Keyword", placeholder="e.g., target-domain.com or 8.8.8.8")
         strict_cve = st.checkbox("Strict CVE matching (CPE-confirmed only — fewer false positives)", value=True)
@@ -1129,12 +1483,6 @@ def main():
                         domain_keyword = clean_target.split('.')[0] if '.' in clean_target else clean_target
 
                         tech_stack = agent_result.get('technologies', [])
-                        # Generic client-side/CDN names are the most likely to
-                        # collide with an unrelated vendor's product string in
-                        # NVD's own CPE dictionary (see NVDIntelligenceClient
-                        # docstring) and rarely have meaningful CVEs of their
-                        # own anyway — prefer a more specific, less ambiguous
-                        # fingerprinted technology first if one was found.
                         AMBIGUOUS_GENERIC_TECH = {"react", "express", "cloudflare"}
                         specific_techs = [t for t in tech_stack if t.lower() not in AMBIGUOUS_GENERIC_TECH]
                         nvd_query_term = specific_techs[0] if specific_techs else domain_keyword
@@ -1149,11 +1497,6 @@ def main():
 
                         top_cvss = max([v.cvss_score for v in cve_res], default=0.0)
 
-                        # Fold the infra audit (ports/headers) gathered during
-                        # the agentic cycle into the aggregate risk score, so
-                        # exposed files, missing security headers, and risky
-                        # open ports actually move the number instead of only
-                        # appearing in the expander below.
                         infra_audit = agent_result.get('infra_audit', {}) or {}
                         exposed_count = len(agent_result.get('exposed_files', []))
                         missing_headers = sum(
@@ -1179,28 +1522,7 @@ def main():
                         c3.metric("Deduplicated Unique CVEs", len(cve_res))
                         c4.metric("Aggregate Risk Score", f"{risk['score']}/100", risk['band'])
 
-                        with st.expander("🤖 View Live Autonomous Agent Execution Logs"):
-                            for log_line in agent_result.get('agent_log', []):
-                                st.code(log_line)
-
                         subdomains = agent_result.get('subdomains', [])
-                        if subdomains:
-                            with st.expander(f"🌐 Enumerated Subdomains ({len(subdomains)})"):
-                                st.dataframe(pd.DataFrame({'subdomain': subdomains}), use_container_width=True)
-
-                        if infra_audit.get('ports') or infra_audit.get('headers'):
-                            with st.expander("🔍 Infrastructure Findings (Ports & Security Headers)"):
-                                if infra_audit.get('ports'):
-                                    st.markdown("**Open Ports:**")
-                                    st.dataframe(pd.DataFrame(infra_audit['ports']), use_container_width=True)
-                                if infra_audit.get('headers') and 'error' not in infra_audit['headers']:
-                                    st.markdown("**Security Headers:**")
-                                    for h_name, h_val in infra_audit['headers'].items():
-                                        icon = "❌" if h_val == 'MISSING' else "✅"
-                                        st.write(f"{icon} **{h_name}:** `{h_val}`")
-
-                        ai_analysis_text = agent_result.get('ai_analysis', "AI analysis skipped.")
-
                         cve_list_md = "\n".join([
                             f"- **{v.cve_id}** (CVSS: {v.cvss_score} - {v.severity}, match: {v.match_confidence}): {v.description}"
                             for v in cve_res
@@ -1212,6 +1534,8 @@ def main():
                         headers_md = "\n".join([
                             f"- **{h}:** `{v}`" for h, v in infra_audit.get('headers', {}).items() if h != 'error'
                         ]) if infra_audit.get('headers') else "Not assessed."
+
+                        ai_analysis_text = agent_result.get('ai_analysis', "AI analysis skipped.")
 
                         report_data = {
                             "target": pipeline_target,
@@ -1299,11 +1623,6 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
                                 use_container_width=True
                             )
                         with dl3:
-                            # CSV of the CVE findings — the one artifact most
-                            # likely to be pasted straight into a ticketing
-                            # system or spreadsheet-based tracker, so it gets
-                            # its own flat export instead of only living
-                            # inside the JSON blob.
                             if cve_res:
                                 cve_csv = pd.DataFrame([v.to_dict() for v in cve_res]).to_csv(index=False)
                             else:
@@ -1315,6 +1634,31 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
                                 mime="text/csv",
                                 use_container_width=True
                             )
+
+                        # --- Advanced Feature Integration (Fixed Argument Passing) ---
+                        remediation_script = af.generate_remediation_script(infra_audit, agent_result.get('exposed_files', []))
+                        
+                        st.markdown("### 🛠️ Automated Hardening & Remediation Script")
+                        st.code(remediation_script, language='bash')
+                        st.download_button(
+                            "📥 Download Autonomous Hardening Script (.sh)", 
+                            data=remediation_script, 
+                            file_name=f"autonomous_harden_{pipeline_target.replace('/', '_')}.sh", 
+                            mime="text/plain",
+                            use_container_width=True
+                        )
+
+                        siem_channels = {
+                            "discord": st.secrets.get("DISCORD_WEBHOOK_URL", ""),
+                            "slack": st.secrets.get("SLACK_WEBHOOK_URL", "")
+                        }
+                        af.send_multi_siem_alert(
+                            siem_channels, 
+                            title=f"🛰️ Autonomous Agent Scan — {pipeline_target}", 
+                            message=f"Pipeline completed with Risk Score: {risk['score']}/100 ({risk['band']}).",
+                            severity=risk['band']
+                        )
+
         elif not authorized:
             st.caption("Check the authorization box above to enable scanning.")
 
@@ -1418,201 +1762,6 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
                             st.error(f"Error: {e}")
             else:
                 st.warning("Please enter a CVE ID or attack description.")
-
-    elif module == "Bug Bounty Recon & Fuzzing":
-        st.markdown("# Target Reconnaissance & Sensitive Endpoint Fuzzing")
-        target_input = st.text_input("Target URL or Domain", placeholder="e.g., target-domain.com")
-        include_subdomains = st.checkbox("Also enumerate subdomains (crt.sh)", value=True)
-        authorized = authorization_gate("recon")
-
-        if st.button("Launch Recon & Asset Discovery", use_container_width=True, disabled=not authorized):
-            validation_error = validate_target_input(target_input) if target_input else "Please specify a target domain or URL."
-            quota_error = check_and_increment_scan_quota(st.session_state.user, max_scans_per_day) if not validation_error else None
-
-            if quota_error:
-                st.error(quota_error)
-            elif validation_error:
-                st.warning(validation_error)
-            else:
-                with st.spinner(f"Executing deep offensive reconnaissance on {target_input}..."):
-                    recon = BugBountyReconEngine.deep_recon(target_input)
-
-                    if recon.get('blocked'):
-                        st.error(f"Scan blocked by scope guard: {recon.get('error')}")
-                    else:
-                        st.success("Reconnaissance cycle complete.")
-
-                        c1, c2, c3 = st.columns(3)
-                        c1.metric("HTTP Status", recon.get('status_code', 'N/A'))
-                        c2.metric("Web Server Banner", recon.get('server', 'N/A'))
-                        c3.metric("Exposed Endpoints", len(recon.get('exposed_files', [])))
-
-                        st.markdown("### Authoritative DNS Records")
-                        for rtype, recs in recon.get('dns', {}).items():
-                            if recs:
-                                st.markdown(f"**{rtype} Records:**")
-                                for r in recs:
-                                    st.code(r)
-
-                        st.markdown("### Fingerprinted Technology Stack")
-                        techs = recon.get('technologies', [])
-                        if techs:
-                            for t in techs:
-                                st.markdown(f"- `{t}`")
-                        else:
-                            st.info("No prominent framework signatures found.")
-
-                        st.markdown("### Exposed Sensitive Endpoints & Backup Files")
-                        exposed = recon.get('exposed_files', [])
-                        if exposed:
-                            st.dataframe(pd.DataFrame(exposed), use_container_width=True)
-                        else:
-                            st.info("No common sensitive files discovered on standard paths.")
-
-                        if include_subdomains:
-                            st.markdown("### Enumerated Subdomains (Certificate Transparency)")
-                            subs = SubdomainEnumEngine.enumerate(target_input)
-                            if subs:
-                                st.dataframe(pd.DataFrame({'subdomain': subs}), use_container_width=True)
-                            else:
-                                st.info("No subdomains found via crt.sh.")
-        elif not authorized:
-            st.caption("Check the authorization box above to enable scanning.")
-
-    elif module == "Network Infrastructure Audit":
-        st.markdown("# Purple Team Infrastructure Reconnaissance & Audit")
-        target_domain = st.text_input("Target Domain or IP Address", placeholder="e.g., scanme.nmap.org")
-        authorized = authorization_gate("audit")
-
-        if st.button("Execute Full Infrastructure Audit", use_container_width=True, disabled=not authorized):
-            validation_error = validate_target_input(target_domain, allow_url=False) if target_domain else "Please provide a valid target host."
-            quota_error = check_and_increment_scan_quota(st.session_state.user, max_scans_per_day) if not validation_error else None
-
-            if quota_error:
-                st.error(quota_error)
-            elif validation_error:
-                st.warning(validation_error)
-            else:
-                with st.spinner(f"Executing live infrastructure audit against {target_domain}..."):
-                    audit_data = AdvancedReconEngine.audit_infrastructure(target_domain)
-
-                    if audit_data.get('blocked'):
-                        st.error(f"Scan blocked by scope guard: {audit_data.get('error')}")
-                    else:
-                        st.success("Infrastructure Audit Completed Successfully.")
-
-                        tab1, tab2, tab3, tab4 = st.tabs(["DNS Records", "Port Scan", "SSL / TLS", "Security Headers"])
-
-                        with tab1:
-                            for rtype, recs in audit_data['dns'].items():
-                                if recs:
-                                    st.markdown(f"**{rtype} Records:**")
-                                    for r in recs:
-                                        st.code(r)
-                        with tab2:
-                            ports = audit_data['ports']
-                            if ports:
-                                st.dataframe(pd.DataFrame(ports), use_container_width=True)
-                            else:
-                                st.info("No open ports found on scanned standard ports.")
-                        with tab3:
-                            ssl_res = audit_data['ssl']
-                            if ssl_res.get('valid'):
-                                st.success("Valid SSL/TLS Certificate Deployed.")
-                                st.json(ssl_res['details'])
-                            else:
-                                st.warning(f"SSL Issue: {ssl_res.get('error', 'Unknown')}")
-                        with tab4:
-                            headers = audit_data['headers']
-                            if 'error' in headers:
-                                st.error(f"Error: {headers['error']}")
-                            else:
-                                for h_name, h_val in headers.items():
-                                    icon = "❌" if h_val == 'MISSING' else "✅"
-                                    st.write(f"{icon} **{h_name}:** `{h_val}`")
-        elif not authorized:
-            st.caption("Check the authorization box above to enable scanning.")
-
-    elif module == "Enterprise NVD Intelligence":
-        st.markdown("# Enterprise NVD Vulnerability Intelligence")
-        keyword = st.text_input("Search Software / Vendor / CVE", placeholder="e.g., apache, wordpress plugin, cve-2024")
-        strict_cve = st.checkbox("Strict CVE matching (CPE-confirmed only)", value=False)
-
-        if st.button("Query NVD Database", use_container_width=True):
-            if keyword:
-                with st.spinner("Fetching CVE telemetry from NIST NVD..."):
-                    client = NVDIntelligenceClient(nvd_key)
-                    vulns = client.search_cve(keyword, min_confidence="cpe" if strict_cve else "any")
-
-                    if vulns:
-                        st.success(f"Retrieved {len(vulns)} unique CVE records.")
-                        for v in vulns:
-                            with st.expander(f"{v.cve_id} | Severity: {v.severity} | CVSS: {v.cvss_score} | Match: {v.match_confidence}"):
-                                st.markdown(f"**Published:** {v.published_date}")
-                                st.markdown(f"**Vector:** `{v.vector_string}`")
-                                st.write(v.description)
-                                st.markdown(f"**Remediation:** {v.remediation}")
-                    else:
-                        st.info("No matching records found in NVD.")
-            else:
-                st.warning("Please enter a search keyword.")
-
-    elif module == "Threat Intel & IOC Triage":
-        st.markdown("# Live Threat Intelligence & IOC Triage")
-        st.markdown("<p style='color: #9ca3af;'>Analyze IP addresses, domains, or URLs against VirusTotal and AbuseIPDB feeds with granular parsing.</p>", unsafe_allow_html=True)
-
-        indicator = st.text_input("Enter Indicator (IP Address, Domain, or URL)", placeholder="e.g., 8.8.8.8 or example.com")
-
-        if st.button("Run Threat Triage Analysis", use_container_width=True):
-            if indicator:
-                with st.spinner(f"Querying threat intelligence feeds for `{indicator}`..."):
-                    ti = ThreatIntelService(vt_key, abuse_key, cache=shared_cache)
-                    report = ti.triage_indicator(indicator)
-                    st.success("Triage Analysis Complete.")
-
-                    st.markdown("---")
-                    col_vt, col_abuse = st.columns(2)
-
-                    with col_vt:
-                        st.subheader("VirusTotal Security Telemetry")
-                        vt_sum = report['vt_summary']
-                        if 'error' in vt_sum:
-                            st.error(vt_sum['error'])
-                        else:
-                            m_count = vt_sum['malicious']
-                            s_count = vt_sum['suspicious']
-                            h_count = vt_sum['harmless']
-
-                            st.metric("Malicious Detections", m_count, delta="Threat Flag" if m_count > 0 else "Clean", delta_color="inverse" if m_count > 0 else "normal")
-                            st.metric("Suspicious Flags", s_count)
-                            st.metric("Harmless Engines", h_count)
-                            st.metric("Community Reputation Score", vt_sum['reputation'])
-                            st.write(f"**Owner / Registrar / ASN:** `{vt_sum['registrar']}`")
-
-                            with st.expander("View Full VirusTotal Raw JSON"):
-                                st.json(report['vt_raw'])
-
-                    with col_abuse:
-                        st.subheader("AbuseIPDB Reputation Telemetry")
-                        abuse_sum = report['abuse_summary']
-                        if 'error' in abuse_sum:
-                            st.error(abuse_sum['error'])
-                        elif 'info' in abuse_sum:
-                            st.info(abuse_sum['info'])
-                        else:
-                            score = abuse_sum['score']
-                            reports = abuse_sum['reports']
-
-                            st.metric("Abuse Confidence Score", f"{score}%", delta="High Risk" if score > 50 else "Low Risk", delta_color="inverse" if score > 50 else "normal")
-                            st.metric("Total Abuse Reports", reports)
-                            st.write(f"**Country Location:** `{abuse_sum['country']}`")
-                            st.write(f"**ISP / Network:** `{abuse_sum['isp']}`")
-                            st.write(f"**Last Reported:** `{abuse_sum['lastReported']}`")
-
-                            with st.expander("View Full AbuseIPDB Raw JSON"):
-                                st.json(report['abuse_raw'])
-            else:
-                st.warning("Please provide a valid indicator.")
 
     elif module == "Offensive Encoder & Hasher":
         st.markdown("# Payload Encoder, Decoder & Hasher")
