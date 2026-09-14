@@ -1202,10 +1202,6 @@ def main():
                 "AI Security Chatbot",
                 "Blue Team SOC Log & SIEM Simulator",
                 "Automated Sigma Rule Generator",
-                "Bug Bounty Recon & Fuzzing",
-                "Network Infrastructure Audit",
-                "Enterprise NVD Intelligence",
-                "Threat Intel & IOC Triage",
                 "Offensive Encoder & Hasher",
                 "Activity History & Logs",
                 "Platform Configuration"
@@ -1229,15 +1225,27 @@ def main():
     elif module == "AI Security Engineer":
         st.markdown("# 🧠 AI Security Engineer")
         st.markdown(
-            "<p style='color: #9ca3af;'>Runs the platform's own recon, infra-audit, subdomain, CPE-aware CVE, and "
-            "threat-intel engines against one target, then writes up the real findings as a human-analyst report. "
-            "Works fully with zero API keys — VT/AbuseIPDB/Groq only add optional enrichment/polish on top of the "
-            "same real data.</p>",
+            "<p style='color: #9ca3af;'>This is now the single place for all real security-engineer work — recon & "
+            "fuzzing, infrastructure/port/TLS/header audit, subdomain enumeration, CPE-aware CVE correlation, and "
+            "VT/AbuseIPDB threat-intel triage all run together here (the old separate 'Bug Bounty Recon & Fuzzing', "
+            "'Network Infrastructure Audit', 'Enterprise NVD Intelligence' and 'Threat Intel & IOC Triage' tools have "
+            "been folded into this one — use the Advanced Options below for the ad-hoc keyword/indicator lookups "
+            "those used to do). Findings are written up as a human-analyst report. Works fully with zero API keys — "
+            "VT/AbuseIPDB/Groq only add optional enrichment/polish on top of the same real data.</p>",
             unsafe_allow_html=True,
         )
 
         ai_target = st.text_input("Target Domain or IP", placeholder="e.g., target-domain.com", key="ai_sec_eng_target")
         strict_cve = st.checkbox("Strict CVE matching (CPE-confirmed only)", value=True, key="ai_sec_eng_strict")
+        with st.expander("⚙️ Advanced options (this replaces the old separate NVD/Threat-Intel point-tools)"):
+            manual_nvd_keyword = st.text_input(
+                "Override NVD search keyword", key="ai_sec_eng_nvd_kw",
+                help="Use this the way you'd have used the old standalone 'Enterprise NVD Intelligence' tool — search any software/vendor keyword directly. Leave blank to auto-pick from the fingerprinted tech stack (or the domain name as fallback)."
+            )
+            manual_ti_indicator = st.text_input(
+                "Override threat-intel indicator", key="ai_sec_eng_ti_ind",
+                help="Use this the way you'd have used the old standalone 'Threat Intel & IOC Triage' tool — check any IP/domain/URL against VT+AbuseIPDB. Leave blank to run it against the target domain itself."
+            )
         authorized = authorization_gate("ai_sec_engineer")
 
         if st.button("🚀 Run AI Security Engineer", use_container_width=True, disabled=not authorized):
@@ -1262,16 +1270,18 @@ def main():
                         specific_techs = [t for t in tech_stack if t.lower() not in AMBIGUOUS_GENERIC_TECH]
                         clean_target = ai_target.replace('https://', '').replace('http://', '').split('/')[0]
                         domain_keyword = clean_target.split('.')[0] if '.' in clean_target else clean_target
-                        nvd_query_term = specific_techs[0] if specific_techs else domain_keyword
+                        auto_nvd_term = specific_techs[0] if specific_techs else domain_keyword
+                        nvd_query_term = manual_nvd_keyword.strip() if manual_nvd_keyword.strip() else auto_nvd_term
 
                         nvd = NVDIntelligenceClient(nvd_key)
                         min_conf = "cpe" if strict_cve else "any"
                         cve_res = nvd.search_cve(nvd_query_term, max_results=8, min_confidence=min_conf)
-                        if not cve_res and domain_keyword != nvd_query_term:
+                        if not cve_res and not manual_nvd_keyword.strip() and domain_keyword != nvd_query_term:
                             cve_res = nvd.search_cve(domain_keyword, max_results=8, min_confidence=min_conf)
 
+                        ti_indicator = manual_ti_indicator.strip() if manual_ti_indicator.strip() else clean_target
                         ti = ThreatIntelService(vt_key, abuse_key, cache=shared_cache)
-                        ti_res = ti.triage_indicator(clean_target)
+                        ti_res = ti.triage_indicator(ti_indicator)
 
                         top_cvss = max([v.cvss_score for v in cve_res], default=0.0)
                         missing_headers = sum(1 for v in infra.get('headers', {}).values() if v == 'MISSING')
@@ -1313,6 +1323,18 @@ def main():
                         st.markdown(report_text)
 
                         with st.expander("🔍 Raw findings behind this report"):
+                            st.markdown("**DNS Records**")
+                            dns_cols = st.columns(3)
+                            dns_data = recon.get('dns') or infra.get('dns') or {}
+                            for i, (rtype, recs) in enumerate(dns_data.items()):
+                                if recs:
+                                    with dns_cols[i % 3]:
+                                        st.caption(rtype)
+                                        for r in recs:
+                                            st.code(r, language=None)
+                            if not any(dns_data.values()):
+                                st.caption("No DNS records resolved.")
+
                             rt1, rt2 = st.columns(2)
                             with rt1:
                                 st.markdown("**Tech stack / exposed paths**")
@@ -1325,6 +1347,12 @@ def main():
                                     st.dataframe(pd.DataFrame({'subdomain': subs}), use_container_width=True, hide_index=True)
                                 else:
                                     st.caption("None found.")
+                                st.markdown("**TLS Certificate**")
+                                ssl_res = infra.get('ssl', {})
+                                if ssl_res.get('valid'):
+                                    st.json(ssl_res.get('details', {}))
+                                else:
+                                    st.caption(f"Unavailable: {ssl_res.get('error', 'no HTTPS response')}")
                             with rt2:
                                 st.markdown("**Ports & headers**")
                                 if infra.get('ports'):
@@ -1334,10 +1362,17 @@ def main():
                                         continue
                                     st.write(("🟢 " if v != 'MISSING' else "🔴 ") + f"`{h}`: `{v}`")
                                 st.markdown("**CVEs**")
+                                st.caption(f"NVD query used: `{nvd_query_term}`")
                                 if cve_res:
                                     st.dataframe(pd.DataFrame([v.to_dict() for v in cve_res]), use_container_width=True, hide_index=True)
                                 else:
                                     st.caption(f"No relevant CVEs for '{nvd_query_term}'.")
+                                st.markdown("**Threat Intel**")
+                                st.caption(f"Indicator checked: `{ti_indicator}`")
+                                if not vt_key and not abuse_key:
+                                    st.caption("VT/AbuseIPDB not configured — optional.")
+                                else:
+                                    st.json({"virustotal": ti_res['vt_summary'], "abuseipdb": ti_res['abuse_summary']})
 
                         report_markdown = f"""# AI SECURITY ENGINEER REPORT
 **Target:** `{clean_target}`
@@ -1398,6 +1433,12 @@ def main():
                         domain_keyword = clean_target.split('.')[0] if '.' in clean_target else clean_target
 
                         tech_stack = agent_result.get('technologies', [])
+                        # Generic client-side/CDN names are the most likely to
+                        # collide with an unrelated vendor's product string in
+                        # NVD's own CPE dictionary (see NVDIntelligenceClient
+                        # docstring) and rarely have meaningful CVEs of their
+                        # own anyway — prefer a more specific, less ambiguous
+                        # fingerprinted technology first if one was found.
                         AMBIGUOUS_GENERIC_TECH = {"react", "express", "cloudflare"}
                         specific_techs = [t for t in tech_stack if t.lower() not in AMBIGUOUS_GENERIC_TECH]
                         nvd_query_term = specific_techs[0] if specific_techs else domain_keyword
@@ -1412,6 +1453,11 @@ def main():
 
                         top_cvss = max([v.cvss_score for v in cve_res], default=0.0)
 
+                        # Fold the infra audit (ports/headers) gathered during
+                        # the agentic cycle into the aggregate risk score, so
+                        # exposed files, missing security headers, and risky
+                        # open ports actually move the number instead of only
+                        # appearing in the expander below.
                         infra_audit = agent_result.get('infra_audit', {}) or {}
                         exposed_count = len(agent_result.get('exposed_files', []))
                         missing_headers = sum(
@@ -1557,6 +1603,11 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
                                 use_container_width=True
                             )
                         with dl3:
+                            # CSV of the CVE findings — the one artifact most
+                            # likely to be pasted straight into a ticketing
+                            # system or spreadsheet-based tracker, so it gets
+                            # its own flat export instead of only living
+                            # inside the JSON blob.
                             if cve_res:
                                 cve_csv = pd.DataFrame([v.to_dict() for v in cve_res]).to_csv(index=False)
                             else:
@@ -1672,200 +1723,6 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
             else:
                 st.warning("Please enter a CVE ID or attack description.")
 
-    elif module == "Bug Bounty Recon & Fuzzing":
-        st.markdown("# Target Reconnaissance & Sensitive Endpoint Fuzzing")
-        target_input = st.text_input("Target URL or Domain", placeholder="e.g., target-domain.com")
-        include_subdomains = st.checkbox("Also enumerate subdomains (crt.sh)", value=True)
-        authorized = authorization_gate("recon")
-
-        if st.button("Launch Recon & Asset Discovery", use_container_width=True, disabled=not authorized):
-            validation_error = validate_target_input(target_input) if target_input else "Please specify a target domain or URL."
-            quota_error = check_and_increment_scan_quota(st.session_state.user, max_scans_per_day) if not validation_error else None
-
-            if quota_error:
-                st.error(quota_error)
-            elif validation_error:
-                st.warning(validation_error)
-            else:
-                with st.spinner(f"Executing deep offensive reconnaissance on {target_input}..."):
-                    recon = BugBountyReconEngine.deep_recon(target_input)
-
-                    if recon.get('blocked'):
-                        st.error(f"Scan blocked by scope guard: {recon.get('error')}")
-                    else:
-                        st.success("Reconnaissance cycle complete.")
-
-                        c1, c2, c3 = st.columns(3)
-                        c1.metric("HTTP Status", recon.get('status_code', 'N/A'))
-                        c2.metric("Web Server Banner", recon.get('server', 'N/A'))
-                        c3.metric("Exposed Endpoints", len(recon.get('exposed_files', [])))
-
-                        st.markdown("### Authoritative DNS Records")
-                        for rtype, recs in recon.get('dns', {}).items():
-                            if recs:
-                                st.markdown(f"**{rtype} Records:**")
-                                for r in recs:
-                                    st.code(r)
-
-                        st.markdown("### Fingerprinted Technology Stack")
-                        techs = recon.get('technologies', [])
-                        if techs:
-                            for t in techs:
-                                st.markdown(f"- `{t}`")
-                        else:
-                            st.info("No prominent framework signatures found.")
-
-                        st.markdown("### Exposed Sensitive Endpoints & Backup Files")
-                        exposed = recon.get('exposed_files', [])
-                        if exposed:
-                            st.dataframe(pd.DataFrame(exposed), use_container_width=True)
-                        else:
-                            st.info("No common sensitive files discovered on standard paths.")
-
-                        if include_subdomains:
-                            st.markdown("### Enumerated Subdomains (Certificate Transparency)")
-                            subs = SubdomainEnumEngine.enumerate(target_input)
-                            if subs:
-                                st.dataframe(pd.DataFrame({'subdomain': subs}), use_container_width=True)
-                            else:
-                                st.info("No subdomains found via crt.sh.")
-        elif not authorized:
-            st.caption("Check the authorization box above to enable scanning.")
-
-    elif module == "Network Infrastructure Audit":
-        st.markdown("# Purple Team Infrastructure Reconnaissance & Audit")
-        target_domain = st.text_input("Target Domain or IP Address", placeholder="e.g., scanme.nmap.org")
-        authorized = authorization_gate("audit")
-
-        if st.button("Execute Full Infrastructure Audit", use_container_width=True, disabled=not authorized):
-            validation_error = validate_target_input(target_domain, allow_url=False) if target_domain else "Please provide a valid target host."
-            quota_error = check_and_increment_scan_quota(st.session_state.user, max_scans_per_day) if not validation_error else None
-
-            if quota_error:
-                st.error(quota_error)
-            elif validation_error:
-                st.warning(validation_error)
-            else:
-                with st.spinner(f"Executing live infrastructure audit against {target_domain}..."):
-                    audit_data = AdvancedReconEngine.audit_infrastructure(target_domain)
-
-                    if audit_data.get('blocked'):
-                        st.error(f"Scan blocked by scope guard: {audit_data.get('error')}")
-                    else:
-                        st.success("Infrastructure Audit Completed Successfully.")
-
-                        tab1, tab2, tab3, tab4 = st.tabs(["DNS Records", "Port Scan", "SSL / TLS", "Security Headers"])
-
-                        with tab1:
-                            for rtype, recs in audit_data['dns'].items():
-                                if recs:
-                                    st.markdown(f"**{rtype} Records:**")
-                                    for r in recs:
-                                        st.code(r)
-                        with tab2:
-                            ports = audit_data['ports']
-                            if ports:
-                                st.dataframe(pd.DataFrame(ports), use_container_width=True)
-                            else:
-                                st.info("No open ports found on scanned standard ports.")
-                        with tab3:
-                            ssl_res = audit_data['ssl']
-                            if ssl_res.get('valid'):
-                                st.success("Valid SSL/TLS Certificate Deployed.")
-                                st.json(ssl_res['details'])
-                            else:
-                                st.warning(f"SSL Issue: {ssl_res.get('error', 'Unknown')}")
-                        with tab4:
-                            headers = audit_data['headers']
-                            if 'error' in headers:
-                                st.error(f"Error: {headers['error']}")
-                            else:
-                                for h_name, h_val in headers.items():
-                                    icon = "❌" if h_val == 'MISSING' else "✅"
-                                    st.write(f"{icon} **{h_name}:** `{h_val}`")
-        elif not authorized:
-            st.caption("Check the authorization box above to enable scanning.")
-
-    elif module == "Enterprise NVD Intelligence":
-        st.markdown("# Enterprise NVD Vulnerability Intelligence")
-        keyword = st.text_input("Search Software / Vendor / CVE", placeholder="e.g., apache, wordpress plugin, cve-2024")
-        strict_cve = st.checkbox("Strict CVE matching (CPE-confirmed only)", value=False)
-
-        if st.button("Query NVD Database", use_container_width=True):
-            if keyword:
-                with st.spinner("Fetching CVE telemetry from NIST NVD..."):
-                    client = NVDIntelligenceClient(nvd_key)
-                    vulns = client.search_cve(keyword, min_confidence="cpe" if strict_cve else "any")
-
-                    if vulns:
-                        st.success(f"Retrieved {len(vulns)} unique CVE records.")
-                        for v in vulns:
-                            with st.expander(f"{v.cve_id} | Severity: {v.severity} | CVSS: {v.cvss_score} | Match: {v.match_confidence}"):
-                                st.markdown(f"**Published:** {v.published_date}")
-                                st.markdown(f"**Vector:** `{v.vector_string}`")
-                                st.write(v.description)
-                                st.markdown(f"**Remediation:** {v.remediation}")
-                    else:
-                        st.info("No matching records found in NVD.")
-            else:
-                st.warning("Please enter a search keyword.")
-
-    elif module == "Threat Intel & IOC Triage":
-        st.markdown("# Live Threat Intelligence & IOC Triage")
-        st.markdown("<p style='color: #9ca3af;'>Analyze IP addresses, domains, or URLs against VirusTotal and AbuseIPDB feeds with granular parsing.</p>", unsafe_allow_html=True)
-
-        indicator = st.text_input("Enter Indicator (IP Address, Domain, or URL)", placeholder="e.g., 8.8.8.8 or example.com")
-
-        if st.button("Run Threat Triage Analysis", use_container_width=True):
-            if indicator:
-                with st.spinner(f"Querying threat intelligence feeds for `{indicator}`..."):
-                    ti = ThreatIntelService(vt_key, abuse_key, cache=shared_cache)
-                    report = ti.triage_indicator(indicator)
-                    st.success("Triage Analysis Complete.")
-
-                    st.markdown("---")
-                    col_vt, col_abuse = st.columns(2)
-
-                    with col_vt:
-                        st.subheader("VirusTotal Security Telemetry")
-                        vt_sum = report['vt_summary']
-                        if 'error' in vt_sum:
-                            st.error(vt_sum['error'])
-                        else:
-                            m_count = vt_sum['malicious']
-                            s_count = vt_sum['suspicious']
-                            h_count = vt_sum['harmless']
-
-                            st.metric("Malicious Detections", m_count, delta="Threat Flag" if m_count > 0 else "Clean", delta_color="inverse" if m_count > 0 else "normal")
-                            st.metric("Suspicious Flags", s_count)
-                            st.metric("Harmless Engines", h_count)
-                            st.metric("Community Reputation Score", vt_sum['reputation'])
-                            st.write(f"**Owner / Registrar / ASN:** `{vt_sum['registrar']}`")
-
-                            with st.expander("View Full VirusTotal Raw JSON"):
-                                st.json(report['vt_raw'])
-
-                    with col_abuse:
-                        st.subheader("AbuseIPDB Reputation Telemetry")
-                        abuse_sum = report['abuse_summary']
-                        if 'error' in abuse_sum:
-                            st.error(abuse_sum['error'])
-                        elif 'info' in abuse_sum:
-                            st.info(abuse_sum['info'])
-                        else:
-                            score = abuse_sum['score']
-                            reports = abuse_sum['reports']
-
-                            st.metric("Abuse Confidence Score", f"{score}%", delta="High Risk" if score > 50 else "Low Risk", delta_color="inverse" if score > 50 else "normal")
-                            st.metric("Total Abuse Reports", reports)
-                            st.write(f"**Country Location:** `{abuse_sum['country']}`")
-                            st.write(f"**ISP / Network:** `{abuse_sum['isp']}`")
-                            st.write(f"**Last Reported:** `{abuse_sum['lastReported']}`")
-
-                            with st.expander("View Full AbuseIPDB Raw JSON"):
-                                st.json(report['abuse_raw'])
-            else:
-                st.warning("Please provide a valid indicator.")
 
     elif module == "Offensive Encoder & Hasher":
         st.markdown("# Payload Encoder, Decoder & Hasher")
