@@ -184,7 +184,6 @@ def virustotal_check(indicator: str, vt_key: str) -> Dict[str, Any]:
     if not vt_key:
         return {'malicious': 0, 'error': 'API key missing'}
     try:
-        is_ip = bool(ipaddress.ip_address(indicator) if False else False) # simplified check
         url = f"https://www.virustotal.com/api/v3/domains/{indicator}"
         headers = {'x-apikey': vt_key}
         resp = requests.get(url, headers=headers, timeout=8)
