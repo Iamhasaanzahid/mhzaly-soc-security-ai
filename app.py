@@ -1398,12 +1398,6 @@ def main():
                         domain_keyword = clean_target.split('.')[0] if '.' in clean_target else clean_target
 
                         tech_stack = agent_result.get('technologies', [])
-                        # Generic client-side/CDN names are the most likely to
-                        # collide with an unrelated vendor's product string in
-                        # NVD's own CPE dictionary (see NVDIntelligenceClient
-                        # docstring) and rarely have meaningful CVEs of their
-                        # own anyway — prefer a more specific, less ambiguous
-                        # fingerprinted technology first if one was found.
                         AMBIGUOUS_GENERIC_TECH = {"react", "express", "cloudflare"}
                         specific_techs = [t for t in tech_stack if t.lower() not in AMBIGUOUS_GENERIC_TECH]
                         nvd_query_term = specific_techs[0] if specific_techs else domain_keyword
@@ -1418,11 +1412,6 @@ def main():
 
                         top_cvss = max([v.cvss_score for v in cve_res], default=0.0)
 
-                        # Fold the infra audit (ports/headers) gathered during
-                        # the agentic cycle into the aggregate risk score, so
-                        # exposed files, missing security headers, and risky
-                        # open ports actually move the number instead of only
-                        # appearing in the expander below.
                         infra_audit = agent_result.get('infra_audit', {}) or {}
                         exposed_count = len(agent_result.get('exposed_files', []))
                         missing_headers = sum(
@@ -1568,11 +1557,6 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
                                 use_container_width=True
                             )
                         with dl3:
-                            # CSV of the CVE findings — the one artifact most
-                            # likely to be pasted straight into a ticketing
-                            # system or spreadsheet-based tracker, so it gets
-                            # its own flat export instead of only living
-                            # inside the JSON blob.
                             if cve_res:
                                 cve_csv = pd.DataFrame([v.to_dict() for v in cve_res]).to_csv(index=False)
                             else:
