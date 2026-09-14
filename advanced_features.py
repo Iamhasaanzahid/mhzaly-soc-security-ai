@@ -46,7 +46,7 @@ def send_multi_siem_alert(channels: Dict[str, str], title: str, message: str, se
 
 
 # 2. Automated Remediation Script Generator
-def generate_remediation_script(infra: Dict[str, Any], recon: Dict[str, Any]) -> str:
+def generate_remediation_script(infra: Dict[str, Any], exposed_files: List[Dict[str, Any]]) -> str:
     """Generates automated bash hardening script based on live scan findings."""
     lines = [
         "#!/usr/bin/env bash",
@@ -62,7 +62,7 @@ def generate_remediation_script(infra: Dict[str, Any], recon: Dict[str, Any]) ->
         for h in missing_headers:
             lines.append(f"echo 'add_header {h} \"nosniff\" always;' >> /etc/nginx/security_headers.conf")
 
-    exposed = recon.get('exposed_files', [])
+    exposed = exposed_files or []
     if exposed:
         lines.append("echo '[+] Restricting access to exposed sensitive endpoints...'")
         for e in exposed:
