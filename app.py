@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MHZALY BUG BOUNTY & ENTERPRISE SECURITY PLATFORM v18.1 - HARDENED SaaS EDITION
+MHZALY BUG BOUNTY & ENTERPRISE SECURITY PLATFORM v18.0 - HARDENED SaaS EDITION
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Comprehensive Purple Team Operations Suite (Red Team Recon + Blue Team SOC Automation)
 Changes vs v17.5:
@@ -14,7 +14,6 @@ Changes vs v17.5:
 - Free-tier subdomain enumeration via crt.sh
 - Aggregate numeric risk score per target
 - JSON export alongside Markdown
-- Added ShieldLite Quick Log Analyzer module for instant log triage without terminal overhead
 
 Author: Muhammad Hassaan Zahid
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -66,6 +65,14 @@ class ScopeViolation(Exception):
 
 
 def assert_public_host(hostname: str) -> None:
+    """
+    SSRF guard. Resolves `hostname` and raises ScopeViolation if it lands on a
+    private, loopback, link-local, reserved, or cloud-metadata address.
+    Call this BEFORE making any outbound request or opening any socket to a
+    user-supplied target — this app runs as a hosted service, and without this
+    check a "domain" input of e.g. "169.254.169.254" or "localhost" would let a
+    user pivot the server into scanning its own internal network.
+    """
     try:
         infos = socket.getaddrinfo(hostname, None)
     except socket.gaierror as e:
@@ -83,11 +90,14 @@ def assert_public_host(hostname: str) -> None:
                 f"Target '{hostname}' resolves to a non-public address ({ip_str}). "
                 f"Refusing to scan internal/reserved network space."
             )
+        # Explicit cloud metadata block (169.254.169.254 is link-local so it's
+        # already caught above, but keep this for clarity/defense-in-depth)
         if ip_str == "169.254.169.254":
             raise ScopeViolation("Refusing to scan the cloud metadata endpoint.")
 
 
 def with_retry(fn: Callable, *args, retries: int = 2, backoff: float = 1.5, **kwargs):
+    """Simple retry with exponential backoff for flaky/rate-limited HTTP calls."""
     last_exc = None
     for attempt in range(retries + 1):
         try:
@@ -100,6 +110,11 @@ def with_retry(fn: Callable, *args, retries: int = 2, backoff: float = 1.5, **kw
 
 
 class TTLCache:
+    """
+    Minimal in-memory TTL cache so repeated lookups (e.g. re-rendering a
+    Streamlit page) don't burn free-tier VT/AbuseIPDB/NVD quota. Not persisted
+    across process restarts — that's fine for its purpose (burst dedup).
+    """
     def __init__(self, ttl_seconds: int = 900):
         self.ttl = ttl_seconds
         self._store: Dict[str, Any] = {}
@@ -147,12 +162,23 @@ class VulnerabilityRecord:
 def compute_risk_score(vt_malicious: int, abuse_score: int, top_cvss: float,
                         exposed_count: int = 0, missing_headers: int = 0,
                         risky_open_ports: int = 0) -> Dict[str, Any]:
-    vt_component = min(vt_malicious * 8, 40)
-    abuse_component = min(abuse_score * 0.3, 30)
-    cvss_component = min((top_cvss / 10) * 30, 30)
-    exposure_component = min(exposed_count * 6, 24)
-    header_component = min(missing_headers * 2.5, 12.5)
-    port_component = min(risky_open_ports * 5, 15)
+    """
+    Aggregate 0-100 risk score blending threat-intel reputation, worst CVE
+    severity found for the target's fingerprinted stack, and — as of this
+    fix — the actual recon findings (exposed files, missing security
+    headers, risky open ports). Previously the score only looked at
+    VT/AbuseIPDB/CVE data, so a freshly-registered or unflagged domain with
+    an exposed .env file, missing CSP/HSTS headers, or a public RDP/MySQL
+    port would still score 0/100 LOW — recon findings were being surfaced in
+    the UI but silently ignored by the score. This is a heuristic, not a
+    certified scoring methodology — surfaced as a triage aid only.
+    """
+    vt_component = min(vt_malicious * 8, 40)          # up to 40 pts
+    abuse_component = min(abuse_score * 0.3, 30)       # up to 30 pts
+    cvss_component = min((top_cvss / 10) * 30, 30)     # up to 30 pts
+    exposure_component = min(exposed_count * 6, 24)    # up to 24 pts — exposed files/backups
+    header_component = min(missing_headers * 2.5, 12.5)  # up to 12.5 pts — missing security headers
+    port_component = min(risky_open_ports * 5, 15)     # up to 15 pts — risky public ports (RDP/DB/ES)
 
     score = round(
         vt_component + abuse_component + cvss_component +
@@ -172,6 +198,9 @@ def compute_risk_score(vt_malicious: int, abuse_score: int, top_cvss: float,
     return {"score": score, "band": band}
 
 
+# Ports that are considered risky when found open and reachable from the
+# public internet (databases, remote-admin, and commonly-unauthenticated
+# search/index services). Used to feed compute_risk_score's port_component.
 RISKY_PUBLIC_PORTS = {3389, 3306, 1433, 5432, 9200, 445, 21}
 
 
@@ -179,6 +208,12 @@ RISKY_PUBLIC_PORTS = {3389, 3306, 1433, 5432, 9200, 445, 21}
 # 0b. PRODUCTION-READINESS: INPUT VALIDATION, SESSION TIMEOUT, SCAN QUOTAS
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# Loose but real host/URL validator: rejects empty/whitespace-only garbage,
+# control characters, obviously-malformed input, and anything absurdly long
+# before it ever reaches a socket call, DNS resolver, or outbound HTTP
+# request. This is a UX/sanity gate, NOT a security boundary by itself —
+# assert_public_host() remains the actual SSRF guard and still runs
+# regardless of what passes here.
 _HOSTNAME_RE = re.compile(
     r'^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$'
 )
@@ -186,6 +221,16 @@ _IPV4_RE = re.compile(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$')
 
 
 def validate_target_input(raw_target: str, allow_url: bool = True) -> Optional[str]:
+    """
+    Validates a user-supplied target (domain, IP, or URL) before it is passed
+    to any recon/scan engine. Returns an error message string if invalid,
+    or None if the input looks acceptable. Deliberately permissive on valid
+    shapes (doesn't try to be a full RFC validator) but catches the classes
+    of input that would otherwise blow up downstream with a confusing stack
+    trace or silently no-op: empty input, embedded whitespace/newlines
+    (header/command injection smell), excessive length, and strings that are
+    neither a plausible hostname, IPv4 address, nor http(s) URL.
+    """
     if raw_target is None:
         return "Target is required."
     target = raw_target.strip()
@@ -217,11 +262,24 @@ def validate_target_input(raw_target: str, allow_url: bool = True) -> Optional[s
             "or http(s) URL.")
 
 
+# Default session inactivity timeout and per-operator daily active-scan
+# quota. Both are overridable via Streamlit secrets so an operator can tune
+# them per deployment without a code change. The quota counter is
+# process-local (in-memory) and resets on app restart — it's a courtesy
+# guard against accidentally hammering free-tier VT/AbuseIPDB/NVD/Groq quota
+# or a target, not a hard security control. For a durable, cross-restart
+# quota, back this with the `db` module's SQLite store instead.
 DEFAULT_SESSION_TIMEOUT_MINUTES = 30
 DEFAULT_MAX_ACTIVE_SCANS_PER_DAY = 100
 
 
 def enforce_session_timeout(timeout_minutes: int) -> bool:
+    """
+    Logs the operator out if they've been idle longer than timeout_minutes.
+    Call once near the top of main() after authentication is confirmed.
+    Returns True if the session is still valid, False if it just expired
+    (caller should stop rendering the rest of the authenticated UI).
+    """
     now = time.time()
     last_activity = st.session_state.get('last_activity_ts', now)
     if now - last_activity > timeout_minutes * 60:
@@ -234,6 +292,15 @@ def enforce_session_timeout(timeout_minutes: int) -> bool:
 
 
 def check_and_increment_scan_quota(operator: str, max_per_day: int) -> Optional[str]:
+    """
+    Lightweight per-operator, per-day active-scan counter to slow down
+    accidental quota-burning loops (e.g. someone mashing 'Launch' in a
+    while-loop-style testing session) against VT/AbuseIPDB/NVD/Groq or
+    against the target itself. Returns an error message if the operator is
+    over quota (in which case the caller should NOT run the scan and should
+    NOT count it), or None if the scan is allowed (in which case the count
+    has already been incremented).
+    """
     today = datetime.now().strftime('%Y-%m-%d')
     quota_key = 'scan_quota'
     quota_state = st.session_state.get(quota_key, {})
@@ -255,6 +322,7 @@ def check_and_increment_scan_quota(operator: str, max_per_day: int) -> Optional[
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class SubdomainEnumEngine:
+    """Free-tier subdomain enumeration via crt.sh certificate transparency logs."""
     @staticmethod
     def enumerate(domain: str, limit: int = 50) -> List[str]:
         clean = domain.replace('https://', '').replace('http://', '').split('/')[0]
@@ -290,6 +358,7 @@ class BugBountyReconEngine:
             else:
                 target_url = target
 
+            # SSRF guard — refuse to touch internal/reserved/metadata addresses
             assert_public_host(clean_target)
 
             for rtype in ['A', 'AAAA', 'MX', 'TXT', 'NS', 'SOA']:
@@ -346,6 +415,7 @@ class BugBountyReconEngine:
                     if p_resp.status_code in [200, 403, 401]:
                         p_text = p_resp.text.lower()
 
+                        # Filter out Streamlit soft-404 pages
                         if 'streamlit' in p_text and 'root' in p_text and len(p_text) > 500:
                             if abs(len(p_text) - len(base_homepage_text)) < 200:
                                 continue
@@ -366,12 +436,18 @@ class BugBountyReconEngine:
 
 
 class AutonomousAgentExecutor:
+    """Autonomous AI-Driven Agentic Loop for deep target reconnaissance and vulnerability triage."""
     @staticmethod
     def _call_groq(messages: List[Dict[str, str]], groq_key: str, max_tokens: int = 1600, temperature: float = 0.4) -> str:
+        """
+        Calls Groq chat completions and, if the model was cut off by the token
+        budget (finish_reason == 'length'), asks it to continue rather than
+        silently returning a truncated report.
+        """
         headers = {'Authorization': f'Bearer {groq_key}', 'Content-Type': 'application/json'}
         full_text = ""
         convo = list(messages)
-        for _ in range(2): 
+        for _ in range(2):  # allow one continuation pass
             payload = {
                 'model': 'openai/gpt-oss-120b',
                 'messages': convo,
@@ -379,7 +455,7 @@ class AutonomousAgentExecutor:
                 'max_tokens': max_tokens,
             }
             resp = with_retry(requests.post, "https://api.groq.com/openai/v1/chat/completions",
-                            json=payload, headers=headers, timeout=30)
+                               json=payload, headers=headers, timeout=30)
             if resp.status_code != 200:
                 return full_text + f"\n[AI Agent LLM Error: {resp.status_code} - {resp.text[:300]}]"
             choice = resp.json()['choices'][0]
@@ -398,6 +474,7 @@ class AutonomousAgentExecutor:
         agent_log = []
         agent_log.append(f"[*] AI Agent initialized for autonomous target scope: {target}")
 
+        # Step 1: Deep Recon Execution
         recon_data = BugBountyReconEngine.deep_recon(target)
         if recon_data.get('blocked'):
             agent_log.append(f"[!] Recon blocked: {recon_data.get('error')}")
@@ -416,6 +493,9 @@ class AutonomousAgentExecutor:
         subdomains = SubdomainEnumEngine.enumerate(target)
         agent_log.append(f"[+] Certificate-transparency subdomain enumeration found {len(subdomains)} host(s).")
 
+        # Step 1b: Infrastructure audit (ports/headers) folded into the
+        # autonomous cycle so its findings feed the aggregate risk score
+        # instead of only being visible in the separate manual audit tab.
         infra_audit = AdvancedReconEngine.audit_infrastructure(target)
         if infra_audit.get('blocked'):
             agent_log.append(f"[!] Infrastructure audit blocked: {infra_audit.get('error')}")
@@ -423,6 +503,7 @@ class AutonomousAgentExecutor:
         else:
             agent_log.append(f"[+] Infrastructure audit found {len(infra_audit.get('ports', []))} open port(s).")
 
+        # Step 2: AI-Powered Context Evaluation & Authorized Security Analysis
         ai_analysis = "AI analysis skipped or key missing."
         if groq_key:
             prompt_context = f"""
@@ -457,6 +538,31 @@ class AutonomousAgentExecutor:
 
 
 class NVDIntelligenceClient:
+    """
+    NVD client with CPE-aware relevance filtering.
+
+    v18.0 fix: a plain keyword search for "React" matched CVEs for unrelated
+    hardware (ABB WiFi Logger) purely because "React" appeared inside an
+    unrelated product's description text. We fixed that by checking the CVE's
+    structured `configurations` (CPE match strings) instead of description
+    text — but that surfaced a second, subtler problem: ABB's own official
+    CPE *product* string for that hardware is literally
+    "wifi_logger_card_for_react", so a plain substring check against the CPE
+    product field ALSO matches it — the word "react" is a real, present token
+    in an entirely unrelated vendor's official product name. Two different
+    things coincidentally share an exact word in NVD's own dictionary; no
+    amount of smarter string matching alone resolves that ambiguity.
+
+    v18.1 fix: for keywords known to be commonly-overloaded generic tech
+    names (a JS framework, a CDN, a webserver name that's also an English
+    word), we additionally require the CPE *vendor* field to match a known
+    authoritative vendor for that keyword before calling it 'cpe' confidence.
+    ABB is not Facebook, so this correctly reclassifies that hit back down to
+    'keyword' (unconfirmed) instead of a false 'cpe' (confirmed) match.
+    """
+
+    # Known-ambiguous keywords -> the CPE vendor token(s) that actually own
+    # that product name. Extend this as new false-positive classes turn up.
     VENDOR_ALLOWLIST = {
         "react": {"facebook", "reactjs", "react_project"},
         "express": {"expressjs", "openjs_foundation", "openjsf"},
@@ -480,10 +586,14 @@ class NVDIntelligenceClient:
             for node in config.get('nodes', []):
                 for match in node.get('cpeMatch', []):
                     criteria = match.get('criteria', '').lower()
+                    # CPE format: cpe:2.3:a:vendor:product:version:...
                     parts = criteria.split(':')
                     if len(parts) > 4:
                         vendor, product = parts[3], parts[4]
                         if allowed_vendors is not None:
+                            # Ambiguous keyword — the product string alone
+                            # isn't trustworthy; require the authoritative
+                            # vendor too.
                             if vendor in allowed_vendors and (kw == product or kw in product):
                                 return True
                         else:
@@ -492,6 +602,12 @@ class NVDIntelligenceClient:
         return False
 
     def search_cve(self, keyword: str, max_results: int = 15, min_confidence: str = "any") -> List[VulnerabilityRecord]:
+        """
+        min_confidence: "any" keeps both cpe+keyword matches (default, matches
+        old behavior for exploratory search); "cpe" restricts to structurally
+        confirmed product matches — use this for autonomous/unattended reports
+        where false positives are costly.
+        """
         vulnerabilities = []
         seen_cves = set()
         try:
@@ -502,6 +618,10 @@ class NVDIntelligenceClient:
 
             response = with_retry(requests.get, self.base_url, params=params, headers=headers, timeout=12)
             if response.status_code in (403, 429):
+                # NVD's unauthenticated tier returns 403 almost as often as
+                # 429 once you're rate-limited — treat both as "back off",
+                # not as a hard/permanent error, so callers can retry later
+                # instead of assuming the keyword search itself is invalid.
                 logger.warning(f"NVD rate limit/forbidden ({response.status_code}) for keyword '{keyword}'.")
             elif response.status_code == 200:
                 data = response.json()
@@ -649,6 +769,7 @@ class AdvancedReconEngine:
         try:
             clean_domain = domain.replace('https://', '').replace('http://', '').split('/')[0]
 
+            # SSRF guard — refuse to port-scan/connect to internal/reserved addresses
             assert_public_host(clean_domain)
 
             for rtype in ['A', 'AAAA', 'MX', 'TXT', 'NS', 'SOA']:
@@ -731,6 +852,12 @@ class AdvancedReconEngine:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def authorization_gate(key_suffix: str) -> bool:
+    """
+    Renders a mandatory authorization checkbox before any active scan module
+    runs. Doesn't verify legal authorization (can't), but forces the operator
+    to explicitly attest to it every time — standard practice for bug-bounty
+    tooling and a paper trail if the platform is ever misused.
+    """
     return st.checkbox(
         "I confirm I am authorized to test this target (owner, bug-bounty program scope, or written permission).",
         key=f"authz_{key_suffix}",
@@ -738,6 +865,7 @@ def authorization_gate(key_suffix: str) -> bool:
 
 
 def render_autonomous_tab():
+    """Renders the Autonomous SOC live monitoring tab from dashboard_tab.py logic."""
     st.markdown("# Autonomous SOC — Live Monitoring")
     st.markdown(
         "<p style='color:#9ca3af;'>Background scheduler scans these targets on "
@@ -837,6 +965,7 @@ def main():
         initial_sidebar_state="expanded"
     )
 
+    # Modern SaaS Dark Glassmorphism Styling Injection
     st.markdown("""
         <style>
         .stApp { background-color: #0b0f19; color: #f3f4f6; font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; }
@@ -891,6 +1020,7 @@ def main():
             password = st.text_input("Operator Password", type="password")
 
             if st.button("Authenticate Suite", use_container_width=True):
+                # Constant-time comparison to avoid timing side-channels on the password check
                 user_ok = hmac.compare_digest(username, correct_user)
                 pass_ok = hmac.compare_digest(password, correct_pass)
                 if user_ok and pass_ok:
@@ -909,6 +1039,9 @@ def main():
                         st.error("Authentication failed: Invalid credentials.")
         return
 
+    # Auto-logout idle operators. Timeout is configurable via secrets so a
+    # deployment can tighten/loosen it without a code change; defaults to
+    # DEFAULT_SESSION_TIMEOUT_MINUTES if unset.
     session_timeout_minutes = int(st.secrets.get("SESSION_TIMEOUT_MINUTES", DEFAULT_SESSION_TIMEOUT_MINUTES))
     if not enforce_session_timeout(session_timeout_minutes):
         return
@@ -934,7 +1067,6 @@ def main():
                 "Autonomous AI-Agent Red/Blue Pipeline",
                 "AI Security Chatbot",
                 "Blue Team SOC Log & SIEM Simulator",
-                "ShieldLite Quick Log Analyzer",
                 "Automated Sigma Rule Generator",
                 "Bug Bounty Recon & Fuzzing",
                 "Network Infrastructure Audit",
@@ -997,6 +1129,12 @@ def main():
                         domain_keyword = clean_target.split('.')[0] if '.' in clean_target else clean_target
 
                         tech_stack = agent_result.get('technologies', [])
+                        # Generic client-side/CDN names are the most likely to
+                        # collide with an unrelated vendor's product string in
+                        # NVD's own CPE dictionary (see NVDIntelligenceClient
+                        # docstring) and rarely have meaningful CVEs of their
+                        # own anyway — prefer a more specific, less ambiguous
+                        # fingerprinted technology first if one was found.
                         AMBIGUOUS_GENERIC_TECH = {"react", "express", "cloudflare"}
                         specific_techs = [t for t in tech_stack if t.lower() not in AMBIGUOUS_GENERIC_TECH]
                         nvd_query_term = specific_techs[0] if specific_techs else domain_keyword
@@ -1011,6 +1149,11 @@ def main():
 
                         top_cvss = max([v.cvss_score for v in cve_res], default=0.0)
 
+                        # Fold the infra audit (ports/headers) gathered during
+                        # the agentic cycle into the aggregate risk score, so
+                        # exposed files, missing security headers, and risky
+                        # open ports actually move the number instead of only
+                        # appearing in the expander below.
                         infra_audit = agent_result.get('infra_audit', {}) or {}
                         exposed_count = len(agent_result.get('exposed_files', []))
                         missing_headers = sum(
@@ -1156,6 +1299,11 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
                                 use_container_width=True
                             )
                         with dl3:
+                            # CSV of the CVE findings — the one artifact most
+                            # likely to be pasted straight into a ticketing
+                            # system or spreadsheet-based tracker, so it gets
+                            # its own flat export instead of only living
+                            # inside the JSON blob.
                             if cve_res:
                                 cve_csv = pd.DataFrame([v.to_dict() for v in cve_res]).to_csv(index=False)
                             else:
@@ -1245,41 +1393,6 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
                         st.info("No malicious patterns or obvious anomalies detected in the provided log sample.")
             else:
                 st.warning("Please paste some log data to analyze.")
-
-    elif module == "ShieldLite Quick Log Analyzer":
-        st.markdown("# ⚡ ShieldLite: Quick Security Log Analyzer")
-        st.markdown("<p style='color: #9ca3af;'>Paste your suspicious server logs, access logs, or IP lists below for instant Groq AI-powered threat analysis without touching the terminal.</p>", unsafe_allow_html=True)
-
-        log_input = st.text_area("Paste Raw Logs / Data Here:", placeholder="192.168.1.50 - - [14/Sep/2026:05:29:21] 'GET /admin.php HTTP/1.1' 403 548")
-
-        if st.button("Analyze Logs Instantly", use_container_width=True):
-            if not log_input.strip():
-                st.warning("Please paste some log data first!")
-            elif not groq_key:
-                st.error("Groq API Key is missing! Please configure it in Streamlit secrets.")
-            else:
-                with st.spinner("Analyzing threat indicators with Groq LPU..."):
-                    prompt = f"""
-                    You are an expert SOC analyst. Analyze the following raw log or input data, 
-                    identify any security threats, suspicious IP addresses, abnormal status codes, or attack vectors (like SQLi, XSS, brute-force), 
-                    and present the findings in a clean, professional bulleted summary:
-
-                    Logs:
-                    {log_input}
-                    """
-                    try:
-                        analysis_result = AutonomousAgentExecutor._call_groq(
-                            [
-                                {'role': 'system', 'content': 'You are a precise cybersecurity automation assistant.'},
-                                {'role': 'user', 'content': prompt}
-                            ],
-                            groq_key, max_tokens=600, temperature=0.2
-                        )
-                        st.success("Analysis Complete!")
-                        st.markdown("### 🛡️ Threat Intelligence Report")
-                        st.markdown(analysis_result)
-                    except Exception as e:
-                        st.error(f"An error occurred during analysis: {str(e)}")
 
     elif module == "Automated Sigma Rule Generator":
         st.markdown("# Automated Sigma Rule & YARA Detection Generator")
