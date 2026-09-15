@@ -17,7 +17,7 @@ import sqlite3
 import logging
 import time
 import hmac
-import advanced_features as af
+from core import advanced_features as af
 import random
 import ipaddress
 from datetime import datetime
@@ -40,11 +40,11 @@ try:
 except ImportError:
     FPDF_AVAILABLE = False
 
-# Import local backend modules for Autonomous SOC & Connectors
-import db
-import connectors as c
-import notifier
-import scheduler
+# Import local backend modules for Autonomous SOC & Connectors from core folder
+from core import db
+from core import connectors as c
+from core import notifier
+from core import scheduler
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
