@@ -33,7 +33,7 @@ jobs:
           NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
           ZOOMEYE_API_KEY: ${{ secrets.ZOOMEYE_API_KEY }}
         run: |
-          python3 scheduler.py run-all-once
+          python3 core/scheduler.py run-all-once
 
       - name: Commit and Push Updated Database
         run: |
