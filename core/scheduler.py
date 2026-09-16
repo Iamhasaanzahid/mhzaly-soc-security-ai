@@ -35,9 +35,19 @@ import json
 import logging
 from datetime import datetime
 
-import db
-import connectors as c
-import notifier
+try:
+    from . import db
+    from . import connectors as c
+    from . import notifier
+except ImportError:
+    try:
+        from core import db
+        from core import connectors as c
+        from core import notifier
+    except ImportError:
+        import db
+        import connectors as c
+        import notifier
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("mhzaly-scheduler")
