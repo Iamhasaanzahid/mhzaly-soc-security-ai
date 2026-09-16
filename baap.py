@@ -41,10 +41,16 @@ except ImportError:
     FPDF_AVAILABLE = False
 
 # Import local backend modules for Autonomous SOC & Connectors
-import db
-import connectors as c
-import notifier
-import scheduler
+try:
+    from core import db
+    from core import connectors as c
+    from core import notifier
+    from core import scheduler
+except ImportError:
+    import db
+    import connectors as c
+    import notifier
+    import scheduler
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')

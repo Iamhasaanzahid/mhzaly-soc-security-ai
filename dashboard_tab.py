@@ -12,7 +12,10 @@ the whole point: Streamlit stays fast and stateless, scheduler.py does the
 
 import streamlit as st
 import pandas as pd
-import db  # the persistence module shared with scheduler.py
+try:
+    from core import db
+except ImportError:
+    import db  # the persistence module shared with scheduler.py
 
 
 def render_autonomous_tab():
