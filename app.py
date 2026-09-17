@@ -1321,7 +1321,7 @@ def main():
     max_scans_per_day = int(st.secrets.get("MAX_ACTIVE_SCANS_PER_DAY", DEFAULT_MAX_ACTIVE_SCANS_PER_DAY))
 
     vt_key = st.session_state.get("custom_vt_key") or st.secrets.get("VIRUSTOTAL_API_KEY", "")
-    abuse_key = st.secrets.get("ABUSEIPDB_API_KEY", "")
+    abuse_key = st.session_state.get("custom_abuse_key") or st.secrets.get("ABUSEIPDB_API_KEY", "")
     groq_key = st.session_state.get("custom_groq_key") or st.secrets.get("GROQ_API_KEY", "")
     nvd_key = st.session_state.get("custom_nvd_key") or st.secrets.get("NVD_API_KEY", "")
     shared_cache = get_shared_cache()
@@ -1334,11 +1334,14 @@ def main():
         with st.expander("🔑 Custom API Keys"):
             custom_groq = st.text_input("Groq API Key", value=st.session_state.get("custom_groq_key", ""), type="password", key="sidebar_custom_groq")
             custom_vt = st.text_input("VirusTotal API Key", value=st.session_state.get("custom_vt_key", ""), type="password", key="sidebar_custom_vt")
+            custom_abuse = st.text_input("AbuseIPDB API Key", value=st.session_state.get("custom_abuse_key", ""), type="password", key="sidebar_custom_abuse")
             custom_nvd = st.text_input("NVD API Key", value=st.session_state.get("custom_nvd_key", ""), type="password", key="sidebar_custom_nvd")
             if custom_groq:
                 st.session_state["custom_groq_key"] = custom_groq
             if custom_vt:
                 st.session_state["custom_vt_key"] = custom_vt
+            if custom_abuse:
+                st.session_state["custom_abuse_key"] = custom_abuse
             if custom_nvd:
                 st.session_state["custom_nvd_key"] = custom_nvd
         module = st.radio(
