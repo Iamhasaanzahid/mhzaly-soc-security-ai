@@ -1882,11 +1882,14 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
 
-        col_attach, col_input = st.columns([0.25, 0.75])
-        with col_attach:
-            uploaded_file = st.file_uploader("📎 Attach", type=["png", "jpg", "jpeg", "pdf", "txt", "log"], key="chat_file_upload", label_visibility="collapsed")
-        with col_input:
-            prompt = st.chat_input("Ask a security query or request exploit analysis...")
+        with st.form("chat_form", clear_on_submit=True):
+            col_attach, col_input = st.columns([0.3, 0.7])
+            with col_attach:
+                uploaded_file = st.file_uploader("📎 Attach File (PDF, TXT, LOG, IMG)", type=["png", "jpg", "jpeg", "pdf", "txt", "log"], key="chat_file_upload")
+            with col_input:
+                prompt = st.text_input("Type your message here...", placeholder="e.g. Please analyze this PDF report and explain findings...")
+            
+            submitted = st.form_submit_button("🚀 Send Message to AI", use_container_width=True)
 
         file_context = ""
         if uploaded_file is not None:
@@ -1912,9 +1915,10 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
             else:
                 file_context = f"\n\n---\n{file_details} (Attached file successfully received.)\n---"
 
-        if prompt:
-            full_prompt = prompt + file_context
+        if submitted and (prompt or uploaded_file):
+            full_prompt = (prompt or "Please analyze this attached file.") + file_context
             st.session_state.messages.append({"role": "user", "content": full_prompt})
+            
             with st.chat_message("user"):
                 st.markdown(full_prompt)
 
@@ -1936,6 +1940,7 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
                             response_text = f"Connection failed: {e}"
                     st.markdown(response_text)
             st.session_state.messages.append({"role": "assistant", "content": response_text})
+            st.rerun()
 
     elif module == "Blue Team SOC Log & SIEM Simulator":
         st.markdown("# Blue Team SOC Log Parsing & Threat Detection Simulator")
