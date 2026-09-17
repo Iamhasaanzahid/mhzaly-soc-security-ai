@@ -395,6 +395,8 @@ class AutonomousAgentExecutor:
             }
             resp = with_retry(requests.post, "https://api.groq.com/openai/v1/chat/completions",
                               json=payload, headers=headers, timeout=30)
+            if resp.status_code == 401:
+                return full_text + "\n[Local Analyst Narrative Engine active — Groq AI key is optional and currently not configured or invalid]."
             if resp.status_code != 200:
                 return full_text + f"\n[AI Agent LLM Error: {resp.status_code} - {resp.text[:300]}]"
             choice = resp.json()['choices'][0]
