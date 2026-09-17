@@ -1331,11 +1331,12 @@ def main():
     with st.sidebar:
         st.markdown(f"### Operator: `{st.session_state.user}`")
         st.markdown("---")
-        with st.expander("🔑 Custom API Keys"):
+        with st.expander("🔑 Custom API Keys & Webhooks"):
             custom_groq = st.text_input("Groq API Key", value=st.session_state.get("custom_groq_key", ""), type="password", key="sidebar_custom_groq")
             custom_vt = st.text_input("VirusTotal API Key", value=st.session_state.get("custom_vt_key", ""), type="password", key="sidebar_custom_vt")
             custom_abuse = st.text_input("AbuseIPDB API Key", value=st.session_state.get("custom_abuse_key", ""), type="password", key="sidebar_custom_abuse")
             custom_nvd = st.text_input("NVD API Key", value=st.session_state.get("custom_nvd_key", ""), type="password", key="sidebar_custom_nvd")
+            custom_webhook = st.text_input("Discord Webhook URL", value=st.session_state.get("custom_discord_webhook", ""), type="password", key="sidebar_custom_webhook")
             if custom_groq:
                 st.session_state["custom_groq_key"] = custom_groq
             if custom_vt:
@@ -1344,6 +1345,8 @@ def main():
                 st.session_state["custom_abuse_key"] = custom_abuse
             if custom_nvd:
                 st.session_state["custom_nvd_key"] = custom_nvd
+            if custom_webhook:
+                st.session_state["custom_discord_webhook"] = custom_webhook
         module = st.radio(
             "Purple Team Hub Menu",
             [
@@ -1460,6 +1463,20 @@ def main():
 
                     save_ai_security_engineer_scan(clean_target, risk, open_ports_count, exposed_count,
                                                    len(cve_res), st.session_state.user)
+
+                    discord_webhook = st.session_state.get("custom_discord_webhook") or st.secrets.get("DISCORD_WEBHOOK_URL", "")
+                    if discord_webhook:
+                        try:
+                            notifier.send_discord_alert(
+                                discord_webhook,
+                                clean_target,
+                                "AI Security Engineer Scan",
+                                "HIGH" if summary_counts["High"] > 0 or exposed_count > 0 else "MEDIUM",
+                                f"Scan completed for {clean_target} with Risk Score {risk['score']}/100 ({risk['band']}).",
+                                {"Exposed Paths": exposed_count, "Open Ports": open_ports_count, "CVEs": len(cve_res)}
+                            )
+                        except Exception:
+                            pass
 
                     st.success("AI Security Engineer run complete — every finding above is from a live check.")
 
@@ -1881,7 +1898,21 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
                     st.markdown(f"**SHA256:** `{sha_h}`")
 
     elif module == "Activity History & Logs":
-        st.markdown("# Activity History & SQLite Audit Logs")
+        st.markdown("# Activity History & Trend Analytics")
+        ai_hist = get_ai_security_engineer_history(limit=50)
+        if ai_hist:
+            st.markdown("### AI Security Engineer Scan History & Risk Trend")
+            df_ai = pd.DataFrame(ai_hist)
+            st.dataframe(df_ai, use_container_width=True)
+            if 'risk_score' in df_ai.columns and not df_ai.empty:
+                st.markdown("#### Risk Score Trend Over Time")
+                chart_df = df_ai[['timestamp', 'risk_score']].set_index('timestamp')
+                st.line_chart(chart_df)
+        else:
+            st.info("No AI Security Engineer scan history found yet. Run a scan to populate analytics.")
+
+        st.markdown("---")
+        st.markdown("### Autonomous SOC & Scheduler Audit Logs")
         local_db.init_db()
         history = local_db.recent_scan_runs(limit=50)
         if history:
