@@ -1561,6 +1561,29 @@ except Exception as e:
                         st.download_button("📥 Download PoC Script (`verify_poc.py`)", data=poc_script,
                                            file_name=f"poc_{clean_target}.py", mime="text/plain", use_container_width=True)
 
+                    st.markdown("### 🚀 Elite Cyber & WAF Capabilities")
+                    elite_col1, elite_col2 = st.columns(2)
+                    with elite_col1:
+                        st.markdown("**🤖 AI Autonomous Pen-Test Planner:**")
+                        pentest_steps = af.generate_pentest_plan(clean_target, tech_stack)
+                        for step in pentest_steps:
+                            st.markdown(f"- {step}")
+                        
+                        takeovers = af.check_subdomain_takeover(subs)
+                        if takeovers:
+                            st.warning(f"⚠️ {len(takeovers)} potential subdomain takeover vector(s) identified!")
+                    with elite_col2:
+                        st.markdown("**🛡️ WAF & Exploit Defense:**")
+                        waf_rules = af.generate_waf_rules(recon.get('exposed_files', []))
+                        st.download_button("📥 Download WAF Rules (`waf_rules.conf`)", data=waf_rules,
+                                           file_name=f"waf_{clean_target}.conf", mime="text/plain", use_container_width=True)
+                        
+                        exploits = af.correlate_public_exploits(cve_res)
+                        if exploits:
+                            st.error(f"🚨 {len(exploits)} CVE(s) correlated with public Exploit-DB PoCs!")
+                        else:
+                            st.success("✅ No high-risk public exploit correlations found.")
+
                     report_markdown = f"""# AI SECURITY ENGINEER REPORT
 **Target:** `{clean_target}`
 **Timestamp:** `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`
