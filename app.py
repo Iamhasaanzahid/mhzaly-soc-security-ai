@@ -1873,11 +1873,25 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
         st.markdown("# AI Security Operations & Bug Bounty Chatbot (Multimodal)")
         st.markdown("<p style='color: #9ca3af;'>Ask anything about security, exploit vectors, WAF bypass, or defense strategies. Attach screenshots, log files, or PDF reports for deep AI analysis.</p>", unsafe_allow_html=True)
 
-        uploaded_file = st.file_uploader("📎 Attach Screenshot, Log, PDF or Code (PNG, JPG, PDF, TXT, LOG)", type=["png", "jpg", "jpeg", "pdf", "txt", "log"], key="chat_file_upload")
+        if "messages" not in st.session_state:
+            st.session_state.messages = [
+                {"role": "assistant", "content": "Hello operator! I am your MHZALY AI Security Assistant backed by your active API keys. You can chat with me, upload log files, screenshots, or vulnerability reports for deep technical analysis. How can I assist today?"}
+            ]
+
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+
+        col_attach, col_input = st.columns([0.25, 0.75])
+        with col_attach:
+            uploaded_file = st.file_uploader("📎 Attach", type=["png", "jpg", "jpeg", "pdf", "txt", "log"], key="chat_file_upload", label_visibility="collapsed")
+        with col_input:
+            prompt = st.chat_input("Ask a security query or request exploit analysis...")
+
         file_context = ""
         if uploaded_file is not None:
             file_details = f"[Attached File: {uploaded_file.name}]"
-            st.info(f"Attached: `{uploaded_file.name}` ({uploaded_file.size} bytes)")
+            st.caption(f"📎 Attached: `{uploaded_file.name}` ({uploaded_file.size} bytes)")
             if uploaded_file.name.endswith(('.txt', '.log', '.json', '.py', '.sh', '.md')):
                 try:
                     file_text = uploaded_file.getvalue().decode("utf-8", errors="ignore")
@@ -1896,18 +1910,9 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
                 except Exception as e:
                     file_context = f"\n\n---\n{file_details} (PDF extraction error: {e})\n---"
             else:
-                file_context = f"\n\n---\n{file_details} (Attached file successfully received by AI security engine.)\n---"
+                file_context = f"\n\n---\n{file_details} (Attached file successfully received.)\n---"
 
-        if "messages" not in st.session_state:
-            st.session_state.messages = [
-                {"role": "assistant", "content": "Hello operator! I am your MHZALY AI Security Assistant backed by your active API keys. You can chat with me, upload log files, screenshots, or vulnerability reports for deep technical analysis. How can I assist today?"}
-            ]
-
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
-
-        if prompt := st.chat_input("Ask a security query, paste log, or request an exploit analysis..."):
+        if prompt:
             full_prompt = prompt + file_context
             st.session_state.messages.append({"role": "user", "content": full_prompt})
             with st.chat_message("user"):
