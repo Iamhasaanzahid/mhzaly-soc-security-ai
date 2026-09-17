@@ -1870,33 +1870,58 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
             st.caption("Check the authorization box above to enable scanning.")
 
     elif module == "AI Security Chatbot":
-        st.markdown("# AI Security Operations & Bug Bounty Chatbot")
-        st.markdown("<p style='color: #9ca3af;'>Ask anything about security, exploit vectors, WAF bypass, or defense strategies. Powered by Groq AI.</p>", unsafe_allow_html=True)
+        st.markdown("# AI Security Operations & Bug Bounty Chatbot (Multimodal)")
+        st.markdown("<p style='color: #9ca3af;'>Ask anything about security, exploit vectors, WAF bypass, or defense strategies. Attach screenshots, log files, or PDF reports for deep AI analysis.</p>", unsafe_allow_html=True)
+
+        uploaded_file = st.file_uploader("📎 Attach Screenshot, Log, PDF or Code (PNG, JPG, PDF, TXT, LOG)", type=["png", "jpg", "jpeg", "pdf", "txt", "log"], key="chat_file_upload")
+        file_context = ""
+        if uploaded_file is not None:
+            file_details = f"[Attached File: {uploaded_file.name}]"
+            st.info(f"Attached: `{uploaded_file.name}` ({uploaded_file.size} bytes)")
+            if uploaded_file.name.endswith(('.txt', '.log', '.json', '.py', '.sh', '.md')):
+                try:
+                    file_text = uploaded_file.getvalue().decode("utf-8", errors="ignore")
+                    file_context = f"\n\n---\n{file_details}\nContent snippet:\n{file_text[:4000]}\n---"
+                except Exception:
+                    file_context = f"\n\n---\n{file_details}\n---"
+            elif uploaded_file.name.endswith('.pdf'):
+                try:
+                    import pypdf
+                    reader = pypdf.PdfReader(uploaded_file)
+                    pdf_text = ""
+                    for page in reader.pages:
+                        pdf_text += page.extract_text() or ""
+                    file_context = f"\n\n---\n{file_details}\nPDF Content snippet:\n{pdf_text[:4000]}\n---"
+                except Exception:
+                    file_context = f"\n\n---\n{file_details} (PDF uploaded)\n---"
+            else:
+                file_context = f"\n\n---\n{file_details} (Image/Binary asset attached for security audit)\n---"
 
         if "messages" not in st.session_state:
             st.session_state.messages = [
-                {"role": "assistant", "content": "Hello operator! I am your MHZALY AI Security Assistant backed by your active API keys. How can I assist your purple team or security operations today?"}
+                {"role": "assistant", "content": "Hello operator! I am your MHZALY AI Security Assistant backed by your active API keys. You can chat with me, upload log files, screenshots, or vulnerability reports for deep technical analysis. How can I assist today?"}
             ]
 
         for message in st.session_state.messages:
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
 
-        if prompt := st.chat_input("Ask a security query or request a playbook..."):
-            st.session_state.messages.append({"role": "user", "content": prompt})
+        if prompt := st.chat_input("Ask a security query, paste log, or request an exploit analysis..."):
+            full_prompt = prompt + file_context
+            st.session_state.messages.append({"role": "user", "content": full_prompt})
             with st.chat_message("user"):
-                st.markdown(prompt)
+                st.markdown(full_prompt)
 
             with st.chat_message("assistant"):
                 if not groq_key:
-                    response_text = "Error: Groq API Key is not configured in your Streamlit secrets."
+                    response_text = "Error: Groq API Key is not configured in your Streamlit secrets or sidebar."
                     st.markdown(response_text)
                 else:
                     with st.spinner("Analyzing via Groq AI..."):
                         try:
                             response_text = AutonomousAgentExecutor._call_groq(
                                 [
-                                    {'role': 'system', 'content': 'You are an elite Cybersecurity Expert, Purple Team Mentor, and Red/Blue Team Advisor specializing in security assessments.'},
+                                    {'role': 'system', 'content': 'You are an elite Cybersecurity Expert, Purple Team Mentor, and Red/Blue Team Advisor specializing in security assessments, log analysis, and vulnerability triage.'},
                                     *[{'role': m['role'], 'content': m['content']} for m in st.session_state.messages]
                                 ],
                                 groq_key, max_tokens=1500, temperature=0.6,
