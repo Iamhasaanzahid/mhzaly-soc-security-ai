@@ -1883,40 +1883,41 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
                 st.markdown(message["content"])
 
         with st.form("chat_form", clear_on_submit=True):
-            col_attach, col_input = st.columns([0.3, 0.7])
+            col_attach, col_input = st.columns([0.35, 0.65])
             with col_attach:
-                uploaded_file = st.file_uploader("📎 Attach File (PDF, TXT, LOG, IMG)", type=["png", "jpg", "jpeg", "pdf", "txt", "log"], key="chat_file_upload")
+                uploaded_files = st.file_uploader("📎 Attach Files (PDF, TXT, LOG, IMG)", type=["png", "jpg", "jpeg", "pdf", "txt", "log"], key="chat_file_upload", accept_multiple_files=True)
             with col_input:
-                prompt = st.text_input("Type your message here...", placeholder="e.g. Please analyze this PDF report and explain findings...")
+                prompt = st.text_input("Type your message here...", placeholder="e.g. Please analyze these attached files/reports...")
             
             submitted = st.form_submit_button("🚀 Send Message to AI", use_container_width=True)
 
         file_context = ""
-        if uploaded_file is not None:
-            file_details = f"[Attached File: {uploaded_file.name}]"
-            st.caption(f"📎 Attached: `{uploaded_file.name}` ({uploaded_file.size} bytes)")
-            if uploaded_file.name.endswith(('.txt', '.log', '.json', '.py', '.sh', '.md')):
-                try:
-                    file_text = uploaded_file.getvalue().decode("utf-8", errors="ignore")
-                    file_context = f"\n\n---\n{file_details}\nContent snippet:\n{file_text[:4000]}\n---"
-                except Exception:
-                    file_context = f"\n\n---\n{file_details}\n---"
-            elif uploaded_file.name.endswith('.pdf'):
-                try:
-                    import pypdf
-                    import io
-                    reader = pypdf.PdfReader(io.BytesIO(uploaded_file.getvalue()))
-                    pdf_text = ""
-                    for page in reader.pages:
-                        pdf_text += page.extract_text() or ""
-                    file_context = f"\n\n---\n{file_details}\nExtracted PDF Report Content:\n{pdf_text[:8000]}\n---"
-                except Exception as e:
-                    file_context = f"\n\n---\n{file_details} (PDF extraction error: {e})\n---"
-            else:
-                file_context = f"\n\n---\n{file_details} (Attached file successfully received.)\n---"
+        if uploaded_files:
+            for uploaded_file in uploaded_files:
+                file_details = f"[Attached File: {uploaded_file.name}]"
+                st.caption(f"📎 Attached: `{uploaded_file.name}` ({uploaded_file.size} bytes)")
+                if uploaded_file.name.endswith(('.txt', '.log', '.json', '.py', '.sh', '.md')):
+                    try:
+                        file_text = uploaded_file.getvalue().decode("utf-8", errors="ignore")
+                        file_context += f"\n\n---\n{file_details}\nContent snippet:\n{file_text[:4000]}\n---"
+                    except Exception:
+                        file_context += f"\n\n---\n{file_details}\n---"
+                elif uploaded_file.name.endswith('.pdf'):
+                    try:
+                        import pypdf
+                        import io
+                        reader = pypdf.PdfReader(io.BytesIO(uploaded_file.getvalue()))
+                        pdf_text = ""
+                        for page in reader.pages:
+                            pdf_text += page.extract_text() or ""
+                        file_context += f"\n\n---\n{file_details}\nExtracted PDF Report Content:\n{pdf_text[:8000]}\n---"
+                    except Exception as e:
+                        file_context += f"\n\n---\n{file_details} (PDF extraction error: {e})\n---"
+                else:
+                    file_context += f"\n\n---\n{file_details} (Attached file successfully received.)\n---"
 
-        if submitted and (prompt or uploaded_file):
-            full_prompt = (prompt or "Please analyze this attached file.") + file_context
+        if submitted and (prompt or uploaded_files):
+            full_prompt = (prompt or "Please analyze these attached files.") + file_context
             st.session_state.messages.append({"role": "user", "content": full_prompt})
             
             with st.chat_message("user"):
