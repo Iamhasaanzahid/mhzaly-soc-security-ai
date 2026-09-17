@@ -1320,10 +1320,10 @@ def main():
 
     max_scans_per_day = int(st.secrets.get("MAX_ACTIVE_SCANS_PER_DAY", DEFAULT_MAX_ACTIVE_SCANS_PER_DAY))
 
-    vt_key = st.secrets.get("VIRUSTOTAL_API_KEY", "")
+    vt_key = st.session_state.get("custom_vt_key") or st.secrets.get("VIRUSTOTAL_API_KEY", "")
     abuse_key = st.secrets.get("ABUSEIPDB_API_KEY", "")
-    groq_key = st.secrets.get("GROQ_API_KEY", "")
-    nvd_key = st.secrets.get("NVD_API_KEY", "")
+    groq_key = st.session_state.get("custom_groq_key") or st.secrets.get("GROQ_API_KEY", "")
+    nvd_key = st.session_state.get("custom_nvd_key") or st.secrets.get("NVD_API_KEY", "")
     shared_cache = get_shared_cache()
 
     local_db = db
@@ -1331,6 +1331,16 @@ def main():
     with st.sidebar:
         st.markdown(f"### Operator: `{st.session_state.user}`")
         st.markdown("---")
+        with st.expander("🔑 Custom API Keys"):
+            custom_groq = st.text_input("Groq API Key", value=st.session_state.get("custom_groq_key", ""), type="password", key="sidebar_custom_groq")
+            custom_vt = st.text_input("VirusTotal API Key", value=st.session_state.get("custom_vt_key", ""), type="password", key="sidebar_custom_vt")
+            custom_nvd = st.text_input("NVD API Key", value=st.session_state.get("custom_nvd_key", ""), type="password", key="sidebar_custom_nvd")
+            if custom_groq:
+                st.session_state["custom_groq_key"] = custom_groq
+            if custom_vt:
+                st.session_state["custom_vt_key"] = custom_vt
+            if custom_nvd:
+                st.session_state["custom_nvd_key"] = custom_nvd
         module = st.radio(
             "Purple Team Hub Menu",
             [
@@ -1481,27 +1491,43 @@ def main():
 
 {report_text}
 """
-                    dcol1, dcol2, dcol3 = st.columns(3)
+                    def export_findings_csv(cve_list, exposed_list):
+                        import csv
+                        import io
+                        output = io.StringIO()
+                        writer = csv.writer(output)
+                        writer.writerow(['Type', 'Identifier / Path', 'Severity / Status', 'Score / Size', 'Description / Details'])
+                        for v in cve_list:
+                            writer.writerow(['CVE', v.cve_id, v.severity, v.cvss_score, v.title])
+                        for e in exposed_list:
+                            writer.writerow(['Endpoint', e.get('path'), 'Status 200 (Verified)' if e.get('verified_leak') else f"Status {e.get('status')}", e.get('size'), e.get('verification', 'Live endpoint')])
+                        return output.getvalue()
+
+                    dcol1, dcol2, dcol3, dcol4 = st.columns(4)
                     with dcol1:
-                        st.download_button("📥 Download Report (.md)", data=report_markdown,
+                        st.download_button("📥 Download (.md)", data=report_markdown,
                                            file_name=f"ai_security_engineer_{clean_target}.md",
                                            mime="text/markdown", use_container_width=True)
                     with dcol2:
-                        st.download_button("📥 Download Findings (.json)", data=json.dumps({
+                        st.download_button("📥 Download (.json)", data=json.dumps({
                             "target": clean_target, "risk": risk, "summary_counts": summary_counts,
                             "recon": recon, "infra": infra,
                             "subdomains": subs, "cves": [v.to_dict() for v in cve_res], "threat_intel": ti_res,
                         }, indent=2, default=str), file_name=f"ai_security_engineer_{clean_target}.json",
                             mime="application/json", use_container_width=True)
                     with dcol3:
+                        st.download_button("📥 Download (.csv)", data=export_findings_csv(cve_res, recon.get('exposed_files', [])),
+                                           file_name=f"ai_security_engineer_{clean_target}.csv",
+                                           mime="text/csv", use_container_width=True)
+                    with dcol4:
                         if FPDF_AVAILABLE:
                             pdf_bytes = generate_pdf_report(clean_target, risk, summary_counts, report_text,
                                                             recon, infra, cve_res)
-                            st.download_button("📥 Download Report (.pdf)", data=pdf_bytes,
+                            st.download_button("📥 Download (.pdf)", data=pdf_bytes,
                                                file_name=f"ai_security_engineer_{clean_target}.pdf",
                                                mime="application/pdf", use_container_width=True)
                         else:
-                            st.caption("PDF export needs `fpdf2` — add it to requirements.txt to enable this button.")
+                            st.caption("PDF export needs `fpdf2`")
         elif not authorized:
             st.caption("Check the authorization box above to enable scanning.")
 
