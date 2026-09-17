@@ -1887,15 +1887,16 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
             elif uploaded_file.name.endswith('.pdf'):
                 try:
                     import pypdf
-                    reader = pypdf.PdfReader(uploaded_file)
+                    import io
+                    reader = pypdf.PdfReader(io.BytesIO(uploaded_file.getvalue()))
                     pdf_text = ""
                     for page in reader.pages:
                         pdf_text += page.extract_text() or ""
-                    file_context = f"\n\n---\n{file_details}\nPDF Content snippet:\n{pdf_text[:4000]}\n---"
-                except Exception:
-                    file_context = f"\n\n---\n{file_details} (PDF uploaded)\n---"
+                    file_context = f"\n\n---\n{file_details}\nExtracted PDF Report Content:\n{pdf_text[:8000]}\n---"
+                except Exception as e:
+                    file_context = f"\n\n---\n{file_details} (PDF extraction error: {e})\n---"
             else:
-                file_context = f"\n\n---\n{file_details} (Image/Binary asset attached for security audit)\n---"
+                file_context = f"\n\n---\n{file_details} (Attached file successfully received by AI security engine.)\n---"
 
         if "messages" not in st.session_state:
             st.session_state.messages = [
@@ -1921,7 +1922,7 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
                         try:
                             response_text = AutonomousAgentExecutor._call_groq(
                                 [
-                                    {'role': 'system', 'content': 'You are an elite Cybersecurity Expert, Purple Team Mentor, and Red/Blue Team Advisor specializing in security assessments, log analysis, and vulnerability triage.'},
+                                    {'role': 'system', 'content': 'You are an elite Cybersecurity Expert, Purple Team Mentor, and Red/Blue Team Advisor specializing in security assessments, log analysis, and vulnerability triage. You CAN and DO read attached files, PDF reports, logs, and document contents provided in the user prompt. Analyze them thoroughly, extract key security findings, and provide professional technical advice.'},
                                     *[{'role': m['role'], 'content': m['content']} for m in st.session_state.messages]
                                 ],
                                 groq_key, max_tokens=1500, temperature=0.6,
