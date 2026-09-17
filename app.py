@@ -1525,6 +1525,42 @@ def main():
                     st.caption(f"Source: {report_source}")
                     st.markdown(report_text)
 
+                    st.markdown("### 🛡️ Enterprise Governance & OWASP Mapping")
+                    owasp_col1, owasp_col2 = st.columns(2)
+                    with owasp_col1:
+                        st.markdown("**OWASP Top 10 (2021) Categories Mapped:**")
+                        st.markdown("- `A05:2021 - Security Misconfiguration`: Missing HSTS, CSP & security headers")
+                        st.markdown("- `A07:2021 - Identification & Authentication Failures`: Cookie Secure/HttpOnly attributes")
+                        st.markdown("- `A06:2021 - Vulnerable and Outdated Components`: Fingerprinted stack & CVE analysis")
+                    with owasp_col2:
+                        st.markdown("**⚡ Automated Enterprise Tooling:**")
+                        remediation_script = af.generate_remediation_script(infra, recon.get('exposed_files', []))
+                        st.download_button("📥 Download Hardening Script (`remediation.sh`)", data=remediation_script,
+                                           file_name=f"remediation_{clean_target}.sh", mime="text/x-shellscript", use_container_width=True)
+                        
+                        poc_script = f"""#!/usr/bin/env python3
+# MHZALY Security Platform - Automated Verification & PoC Script
+# Target: {clean_target}
+import requests
+import urllib3
+urllib3.disable_warnings()
+
+target = "https://{clean_target}"
+print(f"[*] Running PoC verification against {{target}}...")
+
+headers_to_test = ['Strict-Transport-Security', 'Content-Security-Policy', 'X-Frame-Options']
+try:
+    resp = requests.get(target, timeout=5, verify=False)
+    print(f"[+] Status Code: {{resp.status_code}}")
+    for h in headers_to_test:
+        val = resp.headers.get(h, "MISSING")
+        print(f"    - {{h}}: {{val}}")
+except Exception as e:
+    print(f"[-] Error: {{e}}")
+"""
+                        st.download_button("📥 Download PoC Script (`verify_poc.py`)", data=poc_script,
+                                           file_name=f"poc_{clean_target}.py", mime="text/plain", use_container_width=True)
+
                     report_markdown = f"""# AI SECURITY ENGINEER REPORT
 **Target:** `{clean_target}`
 **Timestamp:** `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`
