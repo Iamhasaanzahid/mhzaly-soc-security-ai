@@ -1878,6 +1878,12 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
                 {"role": "assistant", "content": "Hello operator! I am your MHZALY AI Security Assistant backed by your active API keys. You can chat with me, upload log files, screenshots, or vulnerability reports for deep technical analysis. How can I assist today?"}
             ]
 
+        if st.button("🗑️ Clear Chat History", use_container_width=False):
+            st.session_state.messages = [
+                {"role": "assistant", "content": "Chat history cleared. How can I assist you today?"}
+            ]
+            st.rerun()
+
         for message in st.session_state.messages:
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
