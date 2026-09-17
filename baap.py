@@ -984,45 +984,49 @@ def generate_pdf_report(target: str, risk: Dict[str, Any], summary_counts: Dict[
                         cve_res: List[VulnerabilityRecord]) -> Optional[bytes]:
     if not FPDF_AVAILABLE:
         return None
-    pdf = FPDF()
-    pdf.set_auto_page_break(auto=True, margin=15)
-    pdf.add_page()
+    try:
+        pdf = FPDF()
+        pdf.set_auto_page_break(auto=True, margin=15)
+        pdf.add_page()
 
-    pdf.set_font("Helvetica", "B", 16)
-    pdf.multi_cell(0, 10, "AI Security Engineer - Assessment Report".encode('latin-1', 'replace').decode('latin-1'))
-    pdf.set_font("Helvetica", "", 10)
-    pdf.multi_cell(0, 6, f"Target: {target}".encode('latin-1', 'replace').decode('latin-1'))
-    pdf.multi_cell(0, 6, f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}".encode('latin-1', 'replace').decode('latin-1'))
-    pdf.multi_cell(0, 6, f"Aggregate Risk: {risk.get('score', '?')}/100 ({risk.get('band', 'UNKNOWN')})".encode('latin-1', 'replace').decode('latin-1'))
-    pdf.ln(4)
-
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.multi_cell(0, 8, "Executive Summary")
-    pdf.set_font("Helvetica", "", 10)
-    for sev, count in summary_counts.items():
-        pdf.multi_cell(0, 6, f"  {sev}: {count}".encode('latin-1', 'replace').decode('latin-1'))
-    pdf.ln(4)
-
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.multi_cell(0, 8, "Analyst Write-Up")
-    pdf.set_font("Helvetica", "", 10)
-    clean_text = report_text.encode('latin-1', 'replace').decode('latin-1')
-    for line in clean_text.split("\n"):
-        pdf.multi_cell(0, 6, line if line.strip() else " ")
-
-    if cve_res:
+        pdf.set_font("Helvetica", "B", 16)
+        pdf.cell(0, 10, "AI Security Engineer - Assessment Report".encode('latin-1', 'replace').decode('latin-1'), ln=True)
+        pdf.set_font("Helvetica", "", 10)
+        pdf.cell(0, 6, f"Target: {target}".encode('latin-1', 'replace').decode('latin-1'), ln=True)
+        pdf.cell(0, 6, f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}".encode('latin-1', 'replace').decode('latin-1'), ln=True)
+        pdf.cell(0, 6, f"Aggregate Risk: {risk.get('score', '?')}/100 ({risk.get('band', 'UNKNOWN')})".encode('latin-1', 'replace').decode('latin-1'), ln=True)
         pdf.ln(4)
-        pdf.set_font("Helvetica", "B", 12)
-        pdf.multi_cell(0, 8, "CVE Findings")
-        pdf.set_font("Helvetica", "", 9)
-        for v in cve_res:
-            line = f"{v.cve_id} | CVSS {v.cvss_score} ({v.severity}) | match: {v.match_confidence}"
-            pdf.multi_cell(0, 6, line.encode('latin-1', 'replace').decode('latin-1'))
 
-    out = pdf.output(dest='S')
-    if isinstance(out, str):
-        out = out.encode('latin-1', 'replace')
-    return bytes(out)
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.cell(0, 8, "Executive Summary", ln=True)
+        pdf.set_font("Helvetica", "", 10)
+        for sev, count in summary_counts.items():
+            pdf.cell(0, 6, f"  {sev}: {count}".encode('latin-1', 'replace').decode('latin-1'), ln=True)
+        pdf.ln(4)
+
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.cell(0, 8, "Analyst Write-Up", ln=True)
+        pdf.set_font("Helvetica", "", 10)
+        clean_text = report_text.encode('latin-1', 'replace').decode('latin-1')
+        for line in clean_text.split("\n"):
+            pdf.cell(0, 6, (line if line.strip() else " "), ln=True)
+
+        if cve_res:
+            pdf.ln(4)
+            pdf.set_font("Helvetica", "B", 12)
+            pdf.cell(0, 8, "CVE Findings", ln=True)
+            pdf.set_font("Helvetica", "", 9)
+            for v in cve_res:
+                line = f"{v.cve_id} | CVSS {v.cvss_score} ({v.severity}) | match: {v.match_confidence}"
+                pdf.cell(0, 6, line.encode('latin-1', 'replace').decode('latin-1'), ln=True)
+
+        out = pdf.output(dest='S')
+        if isinstance(out, str):
+            out = out.encode('latin-1', 'replace')
+        return bytes(out)
+    except Exception as e:
+        logger.error(f"PDF generation failed: {e}")
+        return None
 
 
 AI_SEC_ENGINEER_DB_PATH = "ai_security_engineer_history.db"
