@@ -1045,7 +1045,7 @@ def build_executive_summary(recon: Dict[str, Any], infra: Dict[str, Any],
 
 def generate_pdf_report(target: str, risk: Dict[str, Any], summary_counts: Dict[str, int],
                         report_text: str, recon: Dict[str, Any], infra: Dict[str, Any],
-                        cve_res: List[VulnerabilityRecord]) -> Optional[bytes]:
+                        cve_res: List[VulnerabilityRecord], auditor_name: str = "MHZALY Security", company_name: str = "") -> Optional[bytes]:
     if not FPDF_AVAILABLE:
         return None
     try:
@@ -1054,9 +1054,10 @@ def generate_pdf_report(target: str, risk: Dict[str, Any], summary_counts: Dict[
         pdf.add_page()
 
         pdf.set_font("Helvetica", "B", 16)
-        pdf.cell(0, 10, "AI Security Engineer - Assessment Report".encode('latin-1', 'replace').decode('latin-1'), ln=True)
+        pdf.cell(0, 10, f"SECURITY ASSESSMENT REPORT — {company_name or target}".encode('latin-1', 'replace').decode('latin-1'), ln=True)
         pdf.set_font("Helvetica", "", 10)
-        pdf.cell(0, 6, f"Target: {target}".encode('latin-1', 'replace').decode('latin-1'), ln=True)
+        pdf.cell(0, 6, f"Prepared By / Auditor: {auditor_name}".encode('latin-1', 'replace').decode('latin-1'), ln=True)
+        pdf.cell(0, 6, f"Target Asset: {target}".encode('latin-1', 'replace').decode('latin-1'), ln=True)
         pdf.cell(0, 6, f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}".encode('latin-1', 'replace').decode('latin-1'), ln=True)
         pdf.cell(0, 6, f"Aggregate Risk: {risk.get('score', '?')}/100 ({risk.get('band', 'UNKNOWN')})".encode('latin-1', 'replace').decode('latin-1'), ln=True)
         pdf.ln(4)
@@ -1625,6 +1626,12 @@ except Exception as e:
                             writer.writerow(['Endpoint', e.get('path'), 'Status 200 (Verified)' if e.get('verified_leak') else f"Status {e.get('status')}", e.get('size'), e.get('verification', 'Live endpoint')])
                         return output.getvalue()
 
+                    with st.expander("📝 Custom PDF Report Branding"):
+                        auditor_name = st.text_input("Auditor / Pentester Name", value=st.session_state.get("auditor_name", "MHZALY Security Operations"), key="pdf_auditor_name")
+                        company_name = st.text_input("Client / Organization Name", value=st.session_state.get("company_name", clean_target), key="pdf_company_name")
+                        st.session_state["auditor_name"] = auditor_name
+                        st.session_state["company_name"] = company_name
+
                     dcol1, dcol2, dcol3, dcol4 = st.columns(4)
                     with dcol1:
                         st.download_button("📥 Download (.md)", data=report_markdown,
@@ -1644,7 +1651,7 @@ except Exception as e:
                     with dcol4:
                         if FPDF_AVAILABLE:
                             pdf_bytes = generate_pdf_report(clean_target, risk, summary_counts, report_text,
-                                                            recon, infra, cve_res)
+                                                            recon, infra, cve_res, auditor_name=auditor_name, company_name=company_name)
                             st.download_button("📥 Download (.pdf)", data=pdf_bytes,
                                                file_name=f"ai_security_engineer_{clean_target}.pdf",
                                                mime="application/pdf", use_container_width=True)
