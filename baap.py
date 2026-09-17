@@ -989,18 +989,18 @@ def generate_pdf_report(target: str, risk: Dict[str, Any], summary_counts: Dict[
     pdf.add_page()
 
     pdf.set_font("Helvetica", "B", 16)
-    pdf.multi_cell(0, 10, "AI Security Engineer — Assessment Report")
+    pdf.multi_cell(0, 10, "AI Security Engineer - Assessment Report".encode('latin-1', 'replace').decode('latin-1'))
     pdf.set_font("Helvetica", "", 10)
-    pdf.multi_cell(0, 6, f"Target: {target}")
-    pdf.multi_cell(0, 6, f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    pdf.multi_cell(0, 6, f"Aggregate Risk: {risk.get('score', '?')}/100 ({risk.get('band', 'UNKNOWN')})")
+    pdf.multi_cell(0, 6, f"Target: {target}".encode('latin-1', 'replace').decode('latin-1'))
+    pdf.multi_cell(0, 6, f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}".encode('latin-1', 'replace').decode('latin-1'))
+    pdf.multi_cell(0, 6, f"Aggregate Risk: {risk.get('score', '?')}/100 ({risk.get('band', 'UNKNOWN')})".encode('latin-1', 'replace').decode('latin-1'))
     pdf.ln(4)
 
     pdf.set_font("Helvetica", "B", 12)
     pdf.multi_cell(0, 8, "Executive Summary")
     pdf.set_font("Helvetica", "", 10)
     for sev, count in summary_counts.items():
-        pdf.multi_cell(0, 6, f"  {sev}: {count}")
+        pdf.multi_cell(0, 6, f"  {sev}: {count}".encode('latin-1', 'replace').decode('latin-1'))
     pdf.ln(4)
 
     pdf.set_font("Helvetica", "B", 12)
