@@ -1493,6 +1493,34 @@ def main():
                     s3.metric("🟡 Medium", summary_counts["Medium"])
                     s4.metric("🟢 Low", summary_counts["Low"])
 
+                    st.markdown("### 🗺️ Attack Surface Topology & Asset Map")
+                    col_topo1, col_topo2, col_topo3 = st.columns(3)
+                    with col_topo1:
+                        st.markdown("**🌐 Discovered Subdomains**")
+                        if subs:
+                            st.code("\n".join(subs[:10]))
+                            if len(subs) > 10:
+                                st.caption(f"...and {len(subs) - 10} more subdomains")
+                        else:
+                            st.info("No subdomains discovered.")
+                    with col_topo2:
+                        st.markdown("**🔌 Open Ports & Services**")
+                        ports_list = infra.get('ports', [])
+                        if ports_list:
+                            for p in ports_list:
+                                st.markdown(f"- `{p['port']}/{p['service']}` ({p['status']})")
+                        else:
+                            st.info("No open ports found.")
+                    with col_topo3:
+                        st.markdown("**📂 Exposed Endpoints**")
+                        exp_list = recon.get('exposed_files', [])
+                        if exp_list:
+                            for e in exp_list:
+                                status_label = "✅ Verified Leak" if e.get('verified_leak') else f"Blocked ({e.get('status')})"
+                                st.markdown(f"- `{e['path']}` — {status_label}")
+                        else:
+                            st.success("No sensitive endpoints exposed.")
+
                     st.markdown("### Analyst Write-Up")
                     st.caption(f"Source: {report_source}")
                     st.markdown(report_text)
