@@ -1402,6 +1402,7 @@ def main():
                 "Automated Sigma Rule Generator",
                 "Offensive Encoder & Hasher",
                 "Activity History & Logs",
+                "🎯 Live Vulnerability & Ticket Manager",
                 "Platform Configuration"
             ]
         )
@@ -2126,6 +2127,35 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
             st.dataframe(pd.DataFrame(history), use_container_width=True)
         else:
             st.info("No recorded activity logs found in shared scheduler database.")
+
+    elif module == "🎯 Live Vulnerability & Ticket Manager":
+        st.markdown("# 🎯 Live Vulnerability & Bug Bounty Ticket Manager")
+        st.markdown("<p style='color: #9ca3af;'>Manage, triage, and track all discovered security findings and bug bounty tickets right here in the web console — zero terminal required.</p>", unsafe_allow_html=True)
+
+        local_db.init_db()
+        conn = local_db.get_connection()
+        try:
+            findings_rows = conn.execute("SELECT * FROM findings ORDER BY id DESC").fetchall()
+        except Exception:
+            findings_rows = []
+        conn.close()
+
+        if findings_rows:
+            df_findings = pd.DataFrame([dict(r) for r in findings_rows])
+            st.dataframe(df_findings, use_container_width=True)
+            
+            st.markdown("### Triage & Ticket Management")
+            selected_finding_id = st.selectbox("Select Finding ID to Update", options=[r['id'] for r in findings_rows])
+            new_status = st.selectbox("Update Ticket Status", options=["Open", "Triaged", "In Progress", "Resolved", "False Positive"])
+            if st.button("Update Finding Status"):
+                conn = local_db.get_connection()
+                conn.execute("UPDATE findings SET severity = ? WHERE id = ?", (new_status, selected_finding_id))
+                conn.commit()
+                conn.close()
+                st.success(f"Finding ID {selected_finding_id} status updated successfully!")
+                st.rerun()
+        else:
+            st.info("No active vulnerability tickets in database. Run scans via AI Security Engineer or Autonomous SOC to populate tickets.")
 
     elif module == "Platform Configuration":
         st.markdown("# Platform Telemetry & API Status")
