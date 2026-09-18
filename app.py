@@ -1633,6 +1633,11 @@ except Exception as e:
                     for ttp in mitre_ttps:
                         st.markdown(f"- **{ttp['tactic']}** (`{ttp['technique_id']}` - {ttp['name']}): {ttp['description']}")
 
+                    st.markdown("### ⚡ Adversarial Cyber Kill Chain Analysis")
+                    kill_chain_steps = af.generate_cyber_kill_chain(clean_target, recon.get('exposed_files', []), [h for h, val in infra.get('headers', {}).items() if val == 'MISSING'], infra.get('ports', []))
+                    for kc in kill_chain_steps:
+                        st.markdown(f"- **{kc['phase']}**: {kc['action']} — *{kc['status']}*")
+
                     st.markdown("### 🚀 Elite Cyber & WAF Capabilities")
                     elite_col1, elite_col2 = st.columns(2)
                     with elite_col1:

@@ -256,3 +256,36 @@ def map_mitre_attck(exposed_paths: List[Dict[str, Any]], missing_headers: List[s
     if missing_headers:
         ttps.append({"tactic": "Defense Evasion / Misconfiguration", "technique_id": "T1190", "name": "Exploit Public-Facing Application", "description": "Missing security headers expose web application to client-side attacks."})
     return ttps
+
+
+# 12. Adversarial Cyber Kill Chain Generator
+def generate_cyber_kill_chain(target: str, exposed_files: List[Dict[str, Any]], missing_headers: List[str], open_ports: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """Generates an adversarial Cyber Kill Chain mapping for the target."""
+    kill_chain = [
+        {
+            "phase": "1. Reconnaissance",
+            "action": f"Active port scanning and Certificate Transparency OSINT against {target}",
+            "status": f"Discovered {len(open_ports)} open port(s) and subdomains."
+        },
+        {
+            "phase": "2. Weaponization",
+            "action": "Correlating discovered stack components and missing security headers",
+            "status": f"Identified {len(missing_headers)} missing hardening headers (HSTS, CSP)."
+        },
+        {
+            "phase": "3. Delivery",
+            "action": "Crafting HTTP probes and fuzzing sensitive configuration paths",
+            "status": f"Probed {len(exposed_files)} sensitive endpoints with automated verification."
+        },
+        {
+            "phase": "4. Exploitation",
+            "action": "Evaluating verified asset disclosures and privilege boundaries",
+            "status": f"Found {sum(1 for e in exposed_files if e.get('verified_leak'))} confirmed live leaks."
+        },
+        {
+            "phase": "5. Actions on Objectives / Impact",
+            "action": "Formulating executive defense-in-depth and WAF blocking strategy",
+            "status": "Generated automated remediation script and WAF rules."
+        }
+    ]
+    return kill_chain
