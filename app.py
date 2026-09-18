@@ -441,32 +441,41 @@ class BugBountyReconEngine:
 class AutonomousAgentExecutor:
     @staticmethod
     def _call_groq(messages: List[Dict[str, str]], groq_key: str, max_tokens: int = 1600, temperature: float = 0.4) -> str:
-        headers = {'Authorization': f'Bearer {groq_key}', 'Content-Type': 'application/json'}
+        if not groq_key:
+            return "[Local Analyst Narrative Engine active — Groq AI key not configured]."
+
+        keys = [k.strip() for k in groq_key.split(',') if k.strip()]
+        models = ['openai/gpt-oss-120b', 'llama3-70b-8192', 'mixtral-8x7b-32768', 'llama3-8b-8192']
+        
         full_text = ""
         convo = list(messages)
-        for _ in range(2):
-            payload = {
-                'model': 'openai/gpt-oss-120b',
-                'messages': convo,
-                'temperature': temperature,
-                'max_tokens': max_tokens,
-            }
-            resp = with_retry(requests.post, "https://api.groq.com/openai/v1/chat/completions",
-                              json=payload, headers=headers, timeout=30)
-            if resp.status_code == 401:
-                return full_text + "\n[Local Analyst Narrative Engine active — Groq AI key is optional and currently not configured or invalid]."
-            if resp.status_code != 200:
-                return full_text + f"\n[AI Agent LLM Error: {resp.status_code} - {resp.text[:300]}]"
-            choice = resp.json()['choices'][0]
-            chunk = choice['message']['content']
-            full_text += chunk
-            if choice.get('finish_reason') != 'length':
-                break
-            convo = convo + [
-                {'role': 'assistant', 'content': chunk},
-                {'role': 'user', 'content': 'Continue exactly where you left off, no repetition.'}
-            ]
-        return full_text
+
+        for key in keys:
+            headers = {'Authorization': f'Bearer {key}', 'Content-Type': 'application/json'}
+            for model in models:
+                try:
+                    payload = {
+                        'model': model,
+                        'messages': convo,
+                        'temperature': temperature,
+                        'max_tokens': max_tokens,
+                    }
+                    resp = requests.post("https://api.groq.com/openai/v1/chat/completions",
+                                       json=payload, headers=headers, timeout=25)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        choice = data['choices'][0]
+                        chunk = choice['message']['content']
+                        full_text += chunk
+                        return full_text
+                    elif resp.status_code == 429:
+                        continue
+                    elif resp.status_code == 401:
+                        break
+                except Exception:
+                    continue
+        
+        return "\n[Local Fallback Engine active — Groq API rate limit or connection timeout reached across all fallback models/keys]."
 
     @staticmethod
     def run_agentic_cycle(target: str, groq_key: str) -> Dict[str, Any]:
