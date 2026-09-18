@@ -243,3 +243,16 @@ def generate_waf_rules(exposed_paths: List[Dict[str, Any]]) -> str:
         if path:
             rules.append(f"SecRule REQUEST_URI \"@beginsWith {path}\" \"id:1001,phase:1,deny,status:403,msg:'MHZALY WAF: Unauthorized access blocked to sensitive endpoint {path}'\"")
     return "\n".join(rules)
+
+
+# 11. MITRE ATT&CK TTP Mapping
+def map_mitre_attck(exposed_paths: List[Dict[str, Any]], missing_headers: List[str], open_ports: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """Maps scan findings to MITRE ATT&CK Enterprise Matrix TTPs."""
+    ttps = []
+    if open_ports:
+        ttps.append({"tactic": "Reconnaissance", "technique_id": "T1595", "name": "Active Scanning", "description": "Port scanning and service fingerprinting discovered open ports."})
+    if exposed_paths:
+        ttps.append({"tactic": "Discovery", "technique_id": "T1592", "name": "Gather Victim Host Information", "description": "Sensitive configuration or backup files exposed on web root."})
+    if missing_headers:
+        ttps.append({"tactic": "Defense Evasion / Misconfiguration", "technique_id": "T1190", "name": "Exploit Public-Facing Application", "description": "Missing security headers expose web application to client-side attacks."})
+    return ttps

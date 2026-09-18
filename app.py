@@ -1603,6 +1603,11 @@ except Exception as e:
                         st.download_button("📥 Download PoC Script (`verify_poc.py`)", data=poc_script,
                                            file_name=f"poc_{clean_target}.py", mime="text/plain", use_container_width=True)
 
+                    st.markdown("### 🎯 MITRE ATT&CK TTP Mapping")
+                    mitre_ttps = af.map_mitre_attck(recon.get('exposed_files', []), [h for h, val in infra.get('headers', {}).items() if val == 'MISSING'], infra.get('ports', []))
+                    for ttp in mitre_ttps:
+                        st.markdown(f"- **{ttp['tactic']}** (`{ttp['technique_id']}` - {ttp['name']}): {ttp['description']}")
+
                     st.markdown("### 🚀 Elite Cyber & WAF Capabilities")
                     elite_col1, elite_col2 = st.columns(2)
                     with elite_col1:
