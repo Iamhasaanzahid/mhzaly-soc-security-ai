@@ -1972,14 +1972,22 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
                 st.markdown(message["content"])
 
         with st.form("chat_form", clear_on_submit=True):
-            col_attach, col_input = st.columns([0.35, 0.65])
-            with col_attach:
-                uploaded_files = st.file_uploader("📎 Attach Files (PDF, TXT, LOG, IMG)", type=["png", "jpg", "jpeg", "pdf", "txt", "log"], key="chat_file_upload", accept_multiple_files=True)
-            with col_input:
+            st.markdown("""
+                <style>
+                [data-testid="stForm"] { background: #111827; border: 1px solid rgba(59, 130, 246, 0.4); border-radius: 16px; padding: 10px; box-shadow: 0 8px 30px rgba(0,0,0,0.5); }
+                [data-testid="stFileUploader"] section { padding: 2px 6px !important; background: #1f2937 !important; border: 1px dashed #4b5563 !important; border-radius: 8px !important; }
+                [data-testid="stFileUploader"] small { display: none !important; }
+                </style>
+            """, unsafe_allow_html=True)
+
+            c_input, c_attach, c_btn = st.columns([0.62, 0.28, 0.1])
+            with c_input:
                 default_prompt = selected_quick_prompt if selected_quick_prompt else ""
-                prompt = st.text_input("Type your security query here...", value=default_prompt, placeholder="e.g. Analyze attached log file or explain exploit vector...")
-            
-            submitted = st.form_submit_button("🚀 Send Message to AI Assistant", use_container_width=True)
+                prompt = st.text_input("Message...", value=default_prompt, placeholder="Ask security query...", label_visibility="collapsed")
+            with c_attach:
+                uploaded_files = st.file_uploader("📎", type=["png", "jpg", "jpeg", "pdf", "txt", "log"], key="chat_file_upload", label_visibility="collapsed", accept_multiple_files=True)
+            with c_btn:
+                submitted = st.form_submit_button("⬆️", use_container_width=True)
 
         file_context = ""
         if uploaded_files:
