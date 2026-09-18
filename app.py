@@ -1416,6 +1416,7 @@ def main():
                 "Activity History & Logs",
                 "🎯 Live Vulnerability & Ticket Manager",
                 "🔬 Digital Forensics & IOC Vault",
+                "🌐 On-Demand Threat Intel & IOC Lookup",
                 "Platform Configuration"
             ]
         )
@@ -2222,6 +2223,21 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
             st.dataframe(pd.DataFrame(artifacts), use_container_width=True)
         else:
             st.info("No forensics artifacts logged yet. Use the form above to record IOCs.")
+
+    elif module == "🌐 On-Demand Threat Intel & IOC Lookup":
+        st.markdown("# 🌐 On-Demand Threat Intelligence & IOC Lookup")
+        st.markdown("<p style='color: #9ca3af;'>Instantly query any domain, IP address, or hash against VirusTotal and AbuseIPDB live on-demand.</p>", unsafe_allow_html=True)
+
+        lookup_target = st.text_input("Enter Domain, IP, or Hash to Query", placeholder="e.g. 8.8.8.8 or example.com")
+        if st.button("🔍 Query Threat Intelligence", use_container_width=True):
+            if lookup_target:
+                with st.spinner(f"Querying threat intelligence APIs for {lookup_target}..."):
+                    ti_service = ThreatIntelService(vt_key, abuse_key, cache=shared_cache)
+                    ti_result = ti_service.triage_indicator(lookup_target)
+                    st.success("Threat Intelligence Lookup Complete:")
+                    st.json(ti_result)
+            else:
+                st.warning("Please enter a valid indicator to query.")
 
     elif module == "Platform Configuration":
         st.markdown("# Platform Telemetry & API Status")
