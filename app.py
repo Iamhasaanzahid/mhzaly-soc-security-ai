@@ -1299,6 +1299,8 @@ def main():
         .stTextInput>div>div>input, .stTextArea>div>div>textarea { background-color: #1f2937; color: #f3f4f6; border: 1px solid #374151; border-radius: 8px; }
         .stTextInput>div>div>input:focus, .stTextArea>div>div>textarea:focus { border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2); }
         h1, h2, h3 { color: #f9fafb; font-weight: 700; letter-spacing: -0.025em; }
+        /* Claude / Gemini Style Chat Interface */
+        [data-testid="stChatMessage"] { background: rgba(17, 24, 39, 0.9); border: 1px solid rgba(75, 85, 99, 0.3); border-radius: 14px; padding: 16px; margin-bottom: 12px; box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3); backdrop-filter: blur(10px); }
         </style>
     """, unsafe_allow_html=True)
 
@@ -1933,19 +1935,37 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
             st.caption("Check the authorization box above to enable scanning.")
 
     elif module == "AI Security Chatbot":
-        st.markdown("# AI Security Operations & Bug Bounty Chatbot (Multimodal)")
-        st.markdown("<p style='color: #9ca3af;'>Ask anything about security, exploit vectors, WAF bypass, or defense strategies. Attach screenshots, log files, or PDF reports for deep AI analysis.</p>", unsafe_allow_html=True)
+        st.markdown("# 🧠 MHZALY Advanced Cyber Intelligence Assistant")
+        st.markdown("<p style='color: #9ca3af;'>Enterprise-grade AI security analyst (Claude/Gemini grade). Upload reports, logs, or code snippets for deep multi-turn reasoning and exploit analysis.</p>", unsafe_allow_html=True)
 
         if "messages" not in st.session_state:
             st.session_state.messages = [
-                {"role": "assistant", "content": "Hello operator! I am your MHZALY AI Security Assistant backed by your active API keys. You can chat with me, upload log files, screenshots, or vulnerability reports for deep technical analysis. How can I assist today?"}
+                {"role": "assistant", "content": "Hello operator! I am your MHZALY AI Security Assistant. I am ready to assist you with vulnerability triage, exploit verification, log forensic analysis, and WAF hardening. How can I assist your operations today?"}
             ]
+
+        st.markdown("**Quick Prompt Suggestions:**")
+        chip1, chip2, chip3, chip4 = st.columns(4)
+        selected_quick_prompt = ""
+        with chip1:
+            if st.button("🛡️ Triage Vulnerability", use_container_width=True):
+                selected_quick_prompt = "Please review my attached vulnerability report and help me write a professional bug bounty submission."
+        with chip2:
+            if st.button("🌐 WAF Bypass Analysis", use_container_width=True):
+                selected_quick_prompt = "Explain advanced techniques for WAF inspection bypass and rate-limit evasion during authorized recon."
+        with chip3:
+            if st.button("✍️ Write Python PoC", use_container_width=True):
+                selected_quick_prompt = "Write a clean, robust Python Proof-of-Concept (PoC) script to verify missing security headers and endpoint disclosures."
+        with chip4:
+            if st.button("📊 OWASP Risk Review", use_container_width=True):
+                selected_quick_prompt = "Provide an OWASP Top 10 risk breakdown and executive mitigation strategy for web application hardening."
 
         if st.button("🗑️ Clear Chat History", use_container_width=False):
             st.session_state.messages = [
-                {"role": "assistant", "content": "Chat history cleared. How can I assist you today?"}
+                {"role": "assistant", "content": "Chat history reset. How can I assist your security operations today?"}
             ]
             st.rerun()
+
+        st.markdown("---")
 
         for message in st.session_state.messages:
             with st.chat_message(message["role"]):
@@ -1956,9 +1976,10 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
             with col_attach:
                 uploaded_files = st.file_uploader("📎 Attach Files (PDF, TXT, LOG, IMG)", type=["png", "jpg", "jpeg", "pdf", "txt", "log"], key="chat_file_upload", accept_multiple_files=True)
             with col_input:
-                prompt = st.text_input("Type your message here...", placeholder="e.g. Please analyze these attached files/reports...")
+                default_prompt = selected_quick_prompt if selected_quick_prompt else ""
+                prompt = st.text_input("Type your security query here...", value=default_prompt, placeholder="e.g. Analyze attached log file or explain exploit vector...")
             
-            submitted = st.form_submit_button("🚀 Send Message to AI", use_container_width=True)
+            submitted = st.form_submit_button("🚀 Send Message to AI Assistant", use_container_width=True)
 
         file_context = ""
         if uploaded_files:
