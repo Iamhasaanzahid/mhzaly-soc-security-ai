@@ -169,6 +169,21 @@ def compute_risk_score(vt_malicious: int, abuse_score: int, top_cvss: float,
     return {"score": score, "band": band}
 
 
+def compute_security_grade(score: float) -> str:
+    if score <= 10:
+        return "A+"
+    elif score <= 25:
+        return "A"
+    elif score <= 45:
+        return "B"
+    elif score <= 70:
+        return "C"
+    elif score <= 85:
+        return "D"
+    else:
+        return "F"
+
+
 RISKY_PUBLIC_PORTS = {3389, 3306, 1433, 5432, 9200, 445, 21}
 
 
@@ -740,17 +755,26 @@ class AdvancedReconEngine:
                 seen_ports.add(port)
                 try:
                     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    sock.settimeout(0.8)
+                    sock.settimeout(1.0)
                     res = sock.connect_ex((clean_domain, port))
-                    sock.close()
+                    banner = ""
                     if res == 0:
+                        try:
+                            if port in [21, 22, 25, 110]:
+                                banner = sock.recv(128).decode('utf-8', errors='ignore').strip()
+                            elif port in [80, 443, 8080, 8443]:
+                                sock.sendall(b"HEAD / HTTP/1.0\r\n\r\n")
+                                banner = sock.recv(256).decode('utf-8', errors='ignore').split('\r\n')[0].strip()
+                        except Exception:
+                            pass
+                        sock.close()
                         sname = {
                             21: 'FTP', 22: 'SSH', 25: 'SMTP', 53: 'DNS', 80: 'HTTP',
                             110: 'POP3', 443: 'HTTPS', 445: 'SMB', 1433: 'MSSQL',
                             3306: 'MySQL', 3389: 'RDP', 5432: 'PostgreSQL', 8080: 'HTTP-Alt',
                             8443: 'HTTPS-Alt', 9200: 'Elasticsearch'
                         }.get(port, 'Unknown')
-                        return {'port': port, 'service': sname, 'status': 'OPEN'}
+                        return {'port': port, 'service': sname, 'status': 'OPEN', 'banner': banner[:100]}
                 except Exception:
                     pass
                 return None
@@ -1496,11 +1520,13 @@ def main():
 
                     st.success("AI Security Engineer run complete — every finding above is from a live check.")
 
-                    m1, m2, m3, m4 = st.columns(4)
+                    sec_grade = compute_security_grade(risk['score'])
+                    m1, m2, m3, m4, m5 = st.columns(5)
                     m1.metric("Aggregate Risk", f"{risk['score']}/100", risk['band'])
-                    m2.metric("Open Ports", open_ports_count)
-                    m3.metric("Exposed Paths", exposed_count)
-                    m4.metric("CVEs (filtered)", len(cve_res))
+                    m2.metric("Security Grade", sec_grade)
+                    m3.metric("Open Ports", open_ports_count)
+                    m4.metric("Exposed Paths", exposed_count)
+                    m5.metric("CVEs (filtered)", len(cve_res))
 
                     st.markdown("### Executive Summary")
                     s1, s2, s3, s4 = st.columns(4)
