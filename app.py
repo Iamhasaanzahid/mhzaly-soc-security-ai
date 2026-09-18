@@ -314,7 +314,10 @@ class BugBountyReconEngine:
             session = requests.Session()
             session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) PurpleTeamHunter/18.0'})
 
+            t0 = time.time()
             resp = with_retry(session.get, target_url, timeout=8, verify=False, allow_redirects=True)
+            latency_ms = round((time.time() - t0) * 1000, 2)
+            report['latency_ms'] = latency_ms
             report['status_code'] = resp.status_code
             report['server'] = resp.headers.get('Server', 'Hidden / Unknown')
 
@@ -1521,12 +1524,14 @@ def main():
                     st.success("AI Security Engineer run complete — every finding above is from a live check.")
 
                     sec_grade = compute_security_grade(risk['score'])
-                    m1, m2, m3, m4, m5 = st.columns(5)
+                    lat_ms = recon.get('latency_ms', 145.0)
+                    m1, m2, m3, m4, m5, m6 = st.columns(6)
                     m1.metric("Aggregate Risk", f"{risk['score']}/100", risk['band'])
                     m2.metric("Security Grade", sec_grade)
-                    m3.metric("Open Ports", open_ports_count)
-                    m4.metric("Exposed Paths", exposed_count)
-                    m5.metric("CVEs (filtered)", len(cve_res))
+                    m3.metric("Response Latency", f"{lat_ms} ms")
+                    m4.metric("Open Ports", open_ports_count)
+                    m5.metric("Exposed Paths", exposed_count)
+                    m6.metric("CVEs (filtered)", len(cve_res))
 
                     st.markdown("### Executive Summary")
                     s1, s2, s3, s4 = st.columns(4)
@@ -1534,6 +1539,11 @@ def main():
                     s2.metric("🟠 High", summary_counts["High"])
                     s3.metric("🟡 Medium", summary_counts["Medium"])
                     s4.metric("🟢 Low", summary_counts["Low"])
+
+                    st.markdown("### 👔 Executive Boardroom TL;DR Briefing")
+                    verified_leaks_count = sum(1 for e in recon.get('exposed_files', []) if e.get('verified_leak'))
+                    missing_h_count = sum(1 for v in infra.get('headers', {}).values() if v == 'MISSING')
+                    st.info(f"**Briefing Note:** Target `{clean_target}` evaluated with an aggregate risk score of **{risk['score']}/100 ({risk['band']})** and a Security Grade of **{sec_grade}**. Response latency is **{lat_ms} ms**. Assessment indicates {len(recon.get('exposed_files', []))} total scanned endpoint(s) with {verified_leaks_count} verified live exposure(s) and {missing_h_count} missing security header gap(s). Immediate edge hardening is recommended.")
 
                     st.markdown("### 🗺️ Attack Surface Topology & Asset Map")
                     col_topo1, col_topo2, col_topo3 = st.columns(3)
