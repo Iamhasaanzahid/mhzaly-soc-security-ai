@@ -1415,6 +1415,7 @@ def main():
                 "Offensive Encoder & Hasher",
                 "Activity History & Logs",
                 "🎯 Live Vulnerability & Ticket Manager",
+                "🔬 Digital Forensics & IOC Vault",
                 "Platform Configuration"
             ]
         )
@@ -2195,6 +2196,32 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
                 st.rerun()
         else:
             st.info("No active vulnerability tickets in database. Run scans via AI Security Engineer or Autonomous SOC to populate tickets.")
+
+    elif module == "🔬 Digital Forensics & IOC Vault":
+        st.markdown("# 🔬 Digital Forensics & Indicator of Compromise (IOC) Vault")
+        st.markdown("<p style='color: #9ca3af;'>Log, track, and persist digital forensics artifacts, malicious file hashes, suspicious IP indicators, and case notes securely in the live SQLite database.</p>", unsafe_allow_html=True)
+
+        with st.form("forensics_form", clear_on_submit=True):
+            f_type = st.selectbox("Artifact Type", options=["IP Address", "File Hash (SHA256/MD5)", "Domain / URL", "Registry Key", "Malicious Process", "Custom IOC"])
+            f_val = st.text_input("Artifact Indicator Value", placeholder="e.g. 192.168.1.100 or d41d8cd98f00b204e9800998ecf8427e")
+            f_sev = st.selectbox("Severity / Threat Level", options=["Low", "Medium", "High", "Critical"])
+            f_notes = st.text_area("Forensic Case Notes & Observations", placeholder="Enter investigative notes, timeline, or vector details...")
+            
+            f_submitted = st.form_submit_button("📥 Log Artifact to Database", use_container_width=True)
+            if f_submitted and f_val:
+                ok = local_db.add_forensics_artifact(f_type, f_val, f_sev, f_notes)
+                if ok:
+                    st.success("Forensic artifact logged successfully to persistent live database!")
+                else:
+                    st.error("Failed to log artifact.")
+
+        st.markdown("---")
+        st.markdown("### Stored Forensics Artifacts & IOCs")
+        artifacts = local_db.get_forensics_artifacts(limit=50)
+        if artifacts:
+            st.dataframe(pd.DataFrame(artifacts), use_container_width=True)
+        else:
+            st.info("No forensics artifacts logged yet. Use the form above to record IOCs.")
 
     elif module == "Platform Configuration":
         st.markdown("# Platform Telemetry & API Status")

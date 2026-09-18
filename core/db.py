@@ -66,6 +66,18 @@ def init_db():
         )
     """)
 
+    # Digital Forensics Artifacts table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS forensics_artifacts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            artifact_type TEXT,
+            artifact_value TEXT,
+            severity TEXT,
+            case_notes TEXT,
+            logged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -220,6 +232,31 @@ def recent_scan_runs(limit: int = 20) -> List[Dict[str, Any]]:
         ORDER BY sr.started_at DESC 
         LIMIT ?
     """, (limit,))
+    rows = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return rows
+
+
+def add_forensics_artifact(artifact_type: str, artifact_value: str, severity: str, case_notes: str) -> bool:
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO forensics_artifacts (artifact_type, artifact_value, severity, case_notes) VALUES (?, ?, ?, ?)",
+            (artifact_type, artifact_value, severity.upper(), case_notes)
+        )
+        conn.commit()
+        return True
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+
+def get_forensics_artifacts(limit: int = 50) -> List[Dict[str, Any]]:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM forensics_artifacts ORDER BY id DESC LIMIT ?", (limit,))
     rows = [dict(row) for row in cursor.fetchall()]
     conn.close()
     return rows
