@@ -1296,20 +1296,21 @@ def main():
 
     st.markdown("""
         <style>
-        .stApp { background-color: #0b0f19; color: #f3f4f6; font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; }
-        [data-testid="stSidebar"] { background-color: #111827; border-right: 1px solid #1f2937; }
-        .saas-card { background: rgba(17, 24, 39, 0.7); border: 1px solid rgba(75, 85, 99, 0.3); border-radius: 12px; padding: 20px; backdrop-filter: blur(12px); margin-bottom: 16px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4); }
-        .stButton>button { background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%); color: white; border: none; border-radius: 8px; font-weight: 600; padding: 0.5rem 1rem; transition: all 0.3s ease; box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3); }
-        .stButton>button:hover { background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%); box-shadow: 0 6px 16px rgba(59, 130, 246, 0.5); transform: translateY(-1px); }
+        .stApp { background-color: #07090e; color: #f3f4f6; font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; }
+        [data-testid="stSidebar"] { background-color: #0d1117; border-right: 1px solid #161b22; }
+        .saas-card { background: linear-gradient(135deg, rgba(13, 17, 23, 0.9) 0%, rgba(22, 27, 34, 0.8) 100%); border: 1px solid rgba(48, 54, 61, 0.6); border-radius: 12px; padding: 22px; backdrop-filter: blur(16px); margin-bottom: 16px; box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5); }
+        .stButton>button { background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%); color: white; border: none; border-radius: 8px; font-weight: 600; padding: 0.55rem 1.2rem; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); box-shadow: 0 4px 14px rgba(37, 99, 235, 0.4); }
+        .stButton>button:hover { background: linear-gradient(135deg, #1d4ed8 100%, #1e40af 100%); box-shadow: 0 6px 20px rgba(37, 99, 235, 0.6); transform: translateY(-2px); }
         .stButton>button:disabled { opacity: 0.4; box-shadow: none; transform: none; }
-        [data-testid="stMetric"] { background: rgba(17, 24, 39, 0.8); border: 1px solid rgba(59, 130, 246, 0.2); padding: 16px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.3); }
-        [data-testid="stMetricLabel"] { color: #9ca3af !important; font-weight: 500; }
-        [data-testid="stMetricValue"] { color: #60a5fa !important; font-weight: 700; }
-        .stTextInput>div>div>input, .stTextArea>div>div>textarea { background-color: #1f2937; color: #f3f4f6; border: 1px solid #374151; border-radius: 8px; }
-        .stTextInput>div>div>input:focus, .stTextArea>div>div>textarea:focus { border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2); }
-        h1, h2, h3 { color: #f9fafb; font-weight: 700; letter-spacing: -0.025em; }
+        [data-testid="stMetric"] { background: linear-gradient(135deg, #0d1117 0%, #161b22 100%); border: 1px solid rgba(59, 130, 246, 0.25); padding: 18px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.4); }
+        [data-testid="stMetricLabel"] { color: #8b949e !important; font-weight: 600; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; }
+        [data-testid="stMetricValue"] { color: #58a6ff !important; font-weight: 800; font-size: 1.6rem; }
+        .stTextInput>div>div>input, .stTextArea>div>div>textarea { background-color: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 8px; }
+        .stTextInput>div>div>input:focus, .stTextArea>div>div>textarea:focus { border-color: #58a6ff; box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.2); }
+        h1, h2, h3 { color: #ffffff; font-weight: 800; letter-spacing: -0.03em; }
+        .exec-banner { background: linear-gradient(90deg, #1f6feb 0%, #238636 100%); color: #ffffff; padding: 10px 18px; border-radius: 10px; font-weight: 700; font-size: 0.95rem; margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 4px 20px rgba(31, 111, 235, 0.4); }
         /* Claude / Gemini Style Chat Interface */
-        [data-testid="stChatMessage"] { background: rgba(17, 24, 39, 0.9); border: 1px solid rgba(75, 85, 99, 0.3); border-radius: 14px; padding: 16px; margin-bottom: 12px; box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3); backdrop-filter: blur(10px); }
+        [data-testid="stChatMessage"] { background: rgba(13, 17, 23, 0.95); border: 1px solid rgba(48, 54, 61, 0.8); border-radius: 14px; padding: 16px; margin-bottom: 12px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4); backdrop-filter: blur(12px); }
         </style>
     """, unsafe_allow_html=True)
 
