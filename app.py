@@ -1856,6 +1856,20 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
 *Generated via MHZALY Autonomous AI Bug Bounty Platform*
 """
 
+                        discord_webhook = st.session_state.get("custom_discord_webhook") or st.secrets.get("DISCORD_WEBHOOK_URL", "")
+                        if discord_webhook:
+                            try:
+                                notifier.send_discord_alert(
+                                    discord_webhook,
+                                    pipeline_target,
+                                    "Autonomous AI Agent Pipeline",
+                                    risk['band'],
+                                    f"Autonomous AI Agent pipeline completed for {pipeline_target} with Risk Score {risk['score']}/100 ({risk['band']}).",
+                                    {"Open Ports": len(agent_result.get('infra_audit', {}).get('ports', [])), "Exposed Paths": len(agent_result.get('exposed_files', [])), "Subdomains": len(agent_result.get('subdomains', []))}
+                                )
+                            except Exception:
+                                pass
+
                         st.markdown("---")
                         st.markdown("### Generated Autonomous Agent Report Preview")
                         st.markdown(auto_report_markdown)
