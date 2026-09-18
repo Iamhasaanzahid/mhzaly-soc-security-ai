@@ -1,76 +1,53 @@
-# AI Security Engineer
+# 🛡️ MHZALY Enterprise SOC & Bug Bounty AI Platform v18.1
 
-Multi-agent security platform — evolution of the MHZALY Purple Team Suite.
-This version is tested to actually run end-to-end: `orchestrator.run_pipeline()`
-was smoke-tested locally and every module compiles clean.
+Comprehensive Purple Team Operations Suite (Red Team Recon + Blue Team SOC Automation & Deep-Thinking AI Intelligence).
 
-## What changed from the last version (and why it broke)
+---
 
-- **Package renamed `agents/` → `sec_agents/`.** `agents` is also the import
-  name of a real PyPI package (the OpenAI Agents SDK, `pip install openai-agents`
-  installs a top-level module called `agents`). If anything in your
-  environment/requirements pulled that in, Python imported *that* package
-  instead of your local folder — `agents.base_agent` genuinely didn't exist
-  in it, which is exactly the `ModuleNotFoundError` you hit. Renaming removes
-  the ambiguity entirely regardless of what's in `requirements.txt`.
-- **No more silent stub mode.** The old `triage_agent.py` assumed an external
-  `connectors.py` existed already; if it didn't, imports failed. Now
-  `connectors.py` is bundled directly in this repo with real, working
-  implementations of all 4 APIs.
-- **Recon no longer needs system binaries.** `nmap`/`subfinder` aren't
-  installed on Streamlit Community Cloud and can't be installed there — a
-  recon agent depending on them works on your machine and dies in
-  production. `recon_agent.py` now uses `crt.sh` (certificate transparency
-  logs, free/no key) + Python's built-in `socket` module instead.
+## 🚀 Key Features & Capabilities
 
-## The 4 APIs, all wired and working
+1. **Autonomous AI Security Engineer:** Type any domain/IP and the platform performs deep reconnaissance, tech stack fingerprinting, header auditing, CVE matching, and AI-driven analyst write-ups.
+2. **Zero False-Positive Verification Engine:** Automatically filters out `403 Forbidden` or blocked pages, confirming 100% live verified sensitive file leaks (`.env`, `.git`, JSON configs, etc.).
+3. **Deep-Thinking Chain-of-Thought (CoT) Engine:** Human-expert level reasoning breaking down targets across a structured 5-phase adversary and defense assessment.
+4. **Multimodal AI Security Chatbot:** Claude & Gemini-grade chat assistant supporting multiple file attachments (PDF reports, log files, text logs, screenshots) with instant text extraction via `pypdf`, quick action chips, and a **Clear Chat History** button.
+5. **Interactive Attack Surface Topology & Asset Map:** Visualizing discovered subdomains, open TCP ports, and endpoints in real-time.
+6. **Automated Enterprise Tooling & Scripts:**
+   - **Hardening Script (`remediation.sh`):** Auto-generated Nginx / Apache server hardening script.
+   - **PoC Verification Script (`verify_poc.py`):** Ready-to-run Python script to verify headers and endpoint exposure.
+   - **WAF Rule Generator (`waf_rules.conf`):** ModSecurity / Cloudflare blocking rules for exposed assets.
+7. **Scan History & Trend Analytics Dashboard:** SQLite-backed scan persistence with risk score trend line charts (`st.line_chart`).
+8. **Real-Time Discord Webhook Alerts:** Automated Discord embeds dispatched on critical findings and completed scan runs.
+9. **MITRE ATT&CK & OWASP Top 10 (2021) Mapping:** Compliance and threat intelligence tagging for professional reporting.
+10. **Digital Forensics & IOC Vault:** Persistent storage for malicious hashes, suspicious IPs, and forensic case notes.
+11. **On-Demand Threat Intel & IOC Lookup:** Instant VirusTotal & AbuseIPDB queries right from the web console.
+12. **Custom PDF Report Branding:** Generate executive PDF reports with custom Auditor Name and Client Organization headers.
+13. **Zero Terminal Workflow:** 100% web-based interactive operations dashboard.
 
-| API | File | Needs a key? |
-|---|---|---|
-| VirusTotal | `sec_agents/connectors.py::query_virustotal` | Yes — `VT_API_KEY` |
-| AbuseIPDB | `sec_agents/connectors.py::query_abuseipdb` | Yes — `ABUSEIPDB_API_KEY` |
-| NVD (CVE data) | `sec_agents/connectors.py::query_nvd` | Optional — `NVD_API_KEY` (raises rate limit) |
-| crt.sh (subdomain enum) | `sec_agents/connectors.py::query_crtsh` | No |
+---
 
-Every connector fails soft (`{"error": "..."}`) instead of raising, so a
-missing key or a dead API never crashes the pipeline — you'll just see it
-flagged in the sidebar and in that agent's results panel.
+## 🔑 Configuration & Free API Keys
 
-## Structure
+In your Streamlit Cloud **App settings → Secrets** (or local `.streamlit/secrets.toml`), configure your free API keys:
 
-```
-app.py                        # Streamlit UI
-orchestrator.py                # runs recon -> triage -> correlation, collects approvals
-sec_agents/
-  connectors.py                 # the 4 API wrappers
-  base_agent.py                 # shared AgentResult / reasoning-trace interface
-  recon_agent.py                # crt.sh + DNS -> subdomains & IPs
-  triage_agent.py                # VirusTotal + AbuseIPDB scoring
-  correlation_agent.py           # NVD CVE matching
+```toml
+APP_USERNAME = "admin"
+APP_PASSWORD = "securepassword"
+
+# Optional Live API Keys
+GROQ_API_KEY = "your-groq-api-key"
+VIRUSTOTAL_API_KEY = "your-virustotal-api-key"
+NVD_API_KEY = "your-nvd-api-key"
+ABUSEIPDB_API_KEY = "your-abuseipdb-api-key"
+DISCORD_WEBHOOK_URL = "your-discord-webhook-url"
 ```
 
-## Deploy to Streamlit Cloud
+---
 
-1. Push this whole folder to your `mhzaly-soc-security-ai` repo (or wherever
-   you're deploying from) — confirm on GitHub's file browser that
-   `sec_agents/__init__.py` actually shows up (empty files sometimes get
-   dropped by drag-and-drop uploads).
-2. In Streamlit Cloud: **App settings → Secrets**, paste in:
-   ```toml
-   VT_API_KEY = "..."
-   ABUSEIPDB_API_KEY = "..."
-   NVD_API_KEY = "..."
-   ```
-3. Reboot the app. The sidebar will show ✅/⚠️ for each API so you can
-   confirm they're picked up correctly.
+## 🚀 Local Deployment
 
-## Next agents to build (same pattern)
-
-- **remediation_agent.py** — turns triage + correlation findings into
-  concrete proposed firewall/config actions (already flows into the
-  approval queue in `app.py` — just needs to populate it).
-- **report_agent.py** — assembles every agent's findings + reasoning trace
-  into a Markdown/PDF security assessment report.
-- Port your v18.0 CPE-aware strict CVE matching into `correlation_agent.py`
-  in place of the current keyword search, to kill false positives the same
-  way you already solved it in the Purple Team Suite.
+```bash
+git clone https://github.com/Iamhasaanzahid/mhzaly-soc-security-ai.git
+cd mhzaly-soc-security-ai
+pip install -r requirements.txt
+streamlit run app.py
+```
