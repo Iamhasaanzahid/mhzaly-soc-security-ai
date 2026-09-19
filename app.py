@@ -1015,15 +1015,35 @@ class AnalystNarrator:
             missing.append("DMARC")
         return f"No {' or '.join(missing)} record found for this domain — that's a gap in email anti-spoofing defenses if this domain sends mail."
 
+    def _micro_forensic_session_analysis(self) -> str:
+        cookies = self.recon.get('cookies', [])
+        if not cookies:
+            return "Session Hygiene: No persistent stateful session cookies were emitted during initial baseline probing."
+        details = []
+        for c in cookies:
+            sec = "Secure" if c['secure'] else "Insecure (Plaintext risk)"
+            http = "HttpOnly" if c['httponly'] else "Exposed to JS (XSS risk)"
+            samesite = c.get('samesite', 'Not set')
+            details.append(f"Cookie `{c['name']}` -> [{sec} | {http} | SameSite: {samesite}]")
+        return "Session & Cookie Forensic Breakdown:\n" + "\n".join(f"- {d}" for d in details)
+
+    def _micro_forensic_transport_analysis(self) -> str:
+        ssl_res = self.infra.get('ssl', {})
+        latency = self.recon.get('latency_ms', 'N/A')
+        if ssl_res.get('valid'):
+            d = ssl_res.get('details', {})
+            return f"Transport Security & Cryptographic Posture: TLS Handshake successfully negotiated with issuer `{d.get('issuer', {}).get('organizationName', 'Unknown CA')}`. Certificate validity active until `{d.get('not_after', 'Unknown')}`. Probe round-trip latency measured at `{latency} ms`."
+        return f"Transport Security & Cryptographic Posture: TLS negotiation unverified from probe node ({ssl_res.get('error', 'No HTTPS response')}). Round-trip latency: `{latency} ms`."
+
     def build(self) -> str:
         sections = [
-            f"### 🛡️ Executive Security Assessment — `{self.target}`",
-            f"**Assessment Date:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')} | **Overall Risk Rating:** **{self.risk.get('score', '?')}/100 ({self.risk.get('band', 'UNKNOWN')})**",
+            f"### 🔬 Micro-Forensic Security Assessment — `{self.target}`",
+            f"**Audit Timestamp:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')} | **Aggregate Risk Score:** **{self.risk.get('score', '?')}/100 ({self.risk.get('band', 'UNKNOWN')})**",
             "",
-            "#### 1. Executive Summary & Overview",
+            "#### 1. Executive Summary & Forensic Overview",
             random.choice(self.OPENERS).format(target=self.target),
             "",
-            "#### 2. Perimeter & Attack Surface Findings",
+            "#### 2. Micro-Perimeter & Attack Surface Decomposition",
             self._exposure_paragraph(),
             "",
             self._tech_paragraph(),
@@ -1032,26 +1052,27 @@ class AnalystNarrator:
             "",
             self._ports_paragraph(),
             "",
-            "#### 3. Edge & Infrastructure Hardening",
+            "#### 3. Cryptographic & Transport Layer Forensics",
+            self._micro_forensic_transport_analysis(),
+            "",
             self._headers_paragraph(),
             "",
-            self._ssl_paragraph(),
-            "",
-            self._cookies_paragraph(),
+            "#### 4. Session State & Cookie Hygiene Audit",
+            self._micro_forensic_session_analysis(),
             "",
             self._cors_paragraph(),
             "",
             self._email_security_paragraph(),
             "",
-            "#### 4. Vulnerability Correlation & Threat Intel",
+            "#### 5. Vulnerability Correlation & Threat Intelligence",
             self._cve_paragraph(),
             "",
             self._threat_intel_paragraph(),
             "",
-            "#### 5. Strategic Remediation & Defense Roadmap",
-            f"**Bottom Line:** The target asset exhibits an aggregate risk score of **{self.risk.get('score', '?')}/100 ({self.risk.get('band', 'UNKNOWN')})**. Immediate action should focus on edge security header enforcement, TLS validation, and closing unverified or exposed perimeter assets.",
+            "#### 6. Granular Remediation Roadmap & Hardening Controls",
+            f"**Forensic Conclusion:** The asset scores **{self.risk.get('score', '?')}/100 ({self.risk.get('band', 'UNKNOWN')})**. Immediate corrective measures require enforcing strict Content Security Policy, validating TLS cipher suites, and continuously auditing perimeter endpoints.",
             "",
-            "_Report compiled via MHZALY Unified Intelligence & Automated Verification Engine._"
+            "_Generated via MHZALY Micro-Forensic Intelligence & Verification Engine._"
         ]
         return "\n".join(sections)
 
