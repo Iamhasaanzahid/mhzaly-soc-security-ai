@@ -400,9 +400,11 @@ class BugBountyReconEngine:
                             is_verified_leak = True
                             verification_msg = "CRITICAL VULNERABILITY: Publicly readable .git repository"
                         elif path in ['/admin', '/auth/login', '/debug', '/server-status']:
-                            if any(k in p_text for k in ['login', 'username', 'password', 'dashboard', 'admin panel']):
+                            if ('<form' in p_text or 'password' in p_text or 'admin panel' in p_text) and not any(term in p_text for term in ['profilepage', 'profile:username', 'linktr.ee']):
                                 is_verified_leak = True
                                 verification_msg = "Live administrative / authentication portal"
+                            else:
+                                return None
                         else:
                             is_verified_leak = True
                             verification_msg = "HTTP 200 Live Accessible"
