@@ -2295,14 +2295,15 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
         st.markdown("# ⚡ Web HTTP Repeater & API Fuzzer (Burp-Style Console)")
         st.markdown("<p style='color: #9ca3af;'>Craft custom HTTP requests, modify headers and parameters on the fly, and inspect live responses — right inside your browser.</p>", unsafe_allow_html=True)
 
-        col_req1, col_req2 = st.columns([1, 3])
+        col_req1, col_req2 = st.columns([1, 4])
         with col_req1:
-            req_method = st.selectbox("HTTP Method", options=["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS"])
+            req_method = st.selectbox("Method", options=["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS"])
         with col_req2:
-            req_url = st.text_input("Target Endpoint URL", placeholder="https://api.target.com/v1/resource")
+            req_url = st.text_input("Target URL", placeholder="https://api.target.com/v1/resource")
 
-        req_headers = st.text_area("Custom Headers (JSON or Key: Value per line)", placeholder="User-Agent: Mozilla/5.0\nAuthorization: Bearer token123", height=100)
-        req_body = st.text_area("Request Body (JSON / Form Data for POST/PUT)", placeholder='{"user_id": 1}', height=100)
+        with st.expander("🛠️ Advanced Request Configuration (Headers & Body)"):
+            req_headers = st.text_area("Custom Headers (Key: Value per line)", placeholder="User-Agent: Mozilla/5.0\nAuthorization: Bearer token123", height=100)
+            req_body = st.text_area("Request Body (JSON / Form Data)", placeholder='{"user_id": 1}', height=100)
 
         if st.button("🚀 Send HTTP Request", use_container_width=True):
             if req_url:
@@ -2316,34 +2317,51 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
                         
                         t0 = time.time()
                         if req_method == "GET":
-                            resp = requests.get(req_url, headers=headers_dict, timeout=10, verify=False)
+                            resp = requests.get(req_url, headers=headers_dict, timeout=12, verify=False, allow_redirects=True)
                         elif req_method == "POST":
-                            resp = requests.post(req_url, headers=headers_dict, data=req_body, timeout=10, verify=False)
+                            resp = requests.post(req_url, headers=headers_dict, data=req_body, timeout=12, verify=False, allow_redirects=True)
                         elif req_method == "PUT":
-                            resp = requests.put(req_url, headers=headers_dict, data=req_body, timeout=10, verify=False)
+                            resp = requests.put(req_url, headers=headers_dict, data=req_body, timeout=12, verify=False, allow_redirects=True)
                         elif req_method == "DELETE":
-                            resp = requests.delete(req_url, headers=headers_dict, timeout=10, verify=False)
+                            resp = requests.delete(req_url, headers=headers_dict, timeout=12, verify=False, allow_redirects=True)
                         elif req_method == "HEAD":
-                            resp = requests.head(req_url, headers=headers_dict, timeout=10, verify=False)
+                            resp = requests.head(req_url, headers=headers_dict, timeout=12, verify=False, allow_redirects=True)
                         else:
-                            resp = requests.options(req_url, headers=headers_dict, timeout=10, verify=False)
+                            resp = requests.options(req_url, headers=headers_dict, timeout=12, verify=False, allow_redirects=True)
                         
                         elapsed = round((time.time() - t0) * 1000, 2)
 
-                        st.success(f"Response Received in {elapsed} ms")
-                        col_res1, col_res2, col_res3 = st.columns(3)
+                        st.markdown("---")
+                        col_res1, col_res2, col_res3, col_res4 = st.columns(4)
                         col_res1.metric("Status Code", resp.status_code)
                         col_res2.metric("Response Size", f"{len(resp.content)} bytes")
                         col_res3.metric("Latency", f"{elapsed} ms")
+                        col_res4.metric("Content Type", resp.headers.get('Content-Type', 'Unknown').split(';')[0])
 
-                        st.markdown("### Response Headers")
-                        st.json(dict(resp.headers))
+                        # Sensitive Keyword Anomaly Check
+                        text_lower = resp.text.lower()
+                        anomalies = []
+                        for kw in ['api_key', 'secret', 'password', 'token', 'stack trace', 'sql syntax', 'root:x:0:0']:
+                            if kw in text_lower:
+                                anomalies.append(kw)
+                        if anomalies:
+                            st.error(f"🚨 SECURITY ANOMALY DETECTED: Response contains sensitive keyword(s): {', '.join(anomalies)}")
 
-                        st.markdown("### Response Body")
-                        try:
-                            st.json(resp.json())
-                        except Exception:
-                            st.code(resp.text[:5000], language='html')
+                        tab_raw, tab_headers, tab_preview = st.tabs(["📦 Raw Response Body", "📋 Response Headers", "🌐 Rendered Preview"])
+                        
+                        with tab_raw:
+                            st.text_area("Response Text", value=resp.text, height=350, key="raw_resp_text")
+                        with tab_headers:
+                            st.json(dict(resp.headers))
+                        with tab_preview:
+                            if 'text/html' in resp.headers.get('Content-Type', ''):
+                                st.components.v1.html(resp.text[:20000], height=400, scrolling=True)
+                            else:
+                                try:
+                                    st.json(resp.json())
+                                except Exception:
+                                    st.code(resp.text[:10000])
+
                     except Exception as e:
                         st.error(f"HTTP Request failed: {e}")
             else:
