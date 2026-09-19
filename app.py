@@ -1463,6 +1463,7 @@ def main():
                 "🎯 Live Vulnerability & Ticket Manager",
                 "🔬 Digital Forensics & IOC Vault",
                 "🌐 On-Demand Threat Intel & IOC Lookup",
+                "⚡ Web HTTP Repeater & API Fuzzer",
                 "Platform Configuration"
             ]
         )
@@ -2289,6 +2290,64 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
                     st.json(ti_result)
             else:
                 st.warning("Please enter a valid indicator to query.")
+
+    elif module == "⚡ Web HTTP Repeater & API Fuzzer":
+        st.markdown("# ⚡ Web HTTP Repeater & API Fuzzer (Burp-Style Console)")
+        st.markdown("<p style='color: #9ca3af;'>Craft custom HTTP requests, modify headers and parameters on the fly, and inspect live responses — right inside your browser.</p>", unsafe_allow_html=True)
+
+        col_req1, col_req2 = st.columns([1, 3])
+        with col_req1:
+            req_method = st.selectbox("HTTP Method", options=["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS"])
+        with col_req2:
+            req_url = st.text_input("Target Endpoint URL", placeholder="https://api.target.com/v1/resource")
+
+        req_headers = st.text_area("Custom Headers (JSON or Key: Value per line)", placeholder="User-Agent: Mozilla/5.0\nAuthorization: Bearer token123", height=100)
+        req_body = st.text_area("Request Body (JSON / Form Data for POST/PUT)", placeholder='{"user_id": 1}', height=100)
+
+        if st.button("🚀 Send HTTP Request", use_container_width=True):
+            if req_url:
+                with st.spinner(f"Sending {req_method} request to {req_url}..."):
+                    try:
+                        headers_dict = {}
+                        for line in req_headers.split('\n'):
+                            if ':' in line:
+                                k, v = line.split(':', 1)
+                                headers_dict[k.strip()] = v.strip()
+                        
+                        t0 = time.time()
+                        if req_method == "GET":
+                            resp = requests.get(req_url, headers=headers_dict, timeout=10, verify=False)
+                        elif req_method == "POST":
+                            resp = requests.post(req_url, headers=headers_dict, data=req_body, timeout=10, verify=False)
+                        elif req_method == "PUT":
+                            resp = requests.put(req_url, headers=headers_dict, data=req_body, timeout=10, verify=False)
+                        elif req_method == "DELETE":
+                            resp = requests.delete(req_url, headers=headers_dict, timeout=10, verify=False)
+                        elif req_method == "HEAD":
+                            resp = requests.head(req_url, headers=headers_dict, timeout=10, verify=False)
+                        else:
+                            resp = requests.options(req_url, headers=headers_dict, timeout=10, verify=False)
+                        
+                        elapsed = round((time.time() - t0) * 1000, 2)
+
+                        st.success(f"Response Received in {elapsed} ms")
+                        col_res1, col_res2, col_res3 = st.columns(3)
+                        col_res1.metric("Status Code", resp.status_code)
+                        col_res2.metric("Response Size", f"{len(resp.content)} bytes")
+                        col_res3.metric("Latency", f"{elapsed} ms")
+
+                        st.markdown("### Response Headers")
+                        st.json(dict(resp.headers))
+
+                        st.markdown("### Response Body")
+                        try:
+                            st.json(resp.json())
+                        except Exception:
+                            st.code(resp.text[:5000], language='html')
+                    except Exception as e:
+                        st.error(f"HTTP Request failed: {e}")
+            else:
+                st.warning("Please specify a target URL.")
 
     elif module == "Platform Configuration":
         st.markdown("# Platform Telemetry & API Status")
