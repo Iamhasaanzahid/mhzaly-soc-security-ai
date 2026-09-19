@@ -1566,10 +1566,10 @@ def main():
                         try:
                             polished = AutonomousAgentExecutor._call_groq(
                                 [
-                                    {'role': 'system', 'content': "You are a senior security engineer. Rewrite the following real findings into clear, professional, conversational prose. Do NOT invent any new findings, numbers, CVEs, or claims beyond what is given — only rephrase and organize."},
-                                    {'role': 'user', 'content': local_report}
+                                    {'role': 'system', 'content': "You are a world-class Principal Bug Bounty Hunter and Senior Red-Team Lead. Act as an expert human security engineer analyzing real target reconnaissance data. Synthesize a meticulous, highly detailed, professional penetration testing report in markdown with expert technical depth, attack surface analysis, and precise defensive remediation."},
+                                    {'role': 'user', 'content': f"Target: {clean_target}\nRecon Data: {json.dumps(recon)}\nInfra Audit: {json.dumps(infra)}\nCVEs: {[v.to_dict() for v in cve_res]}\n\nDraft the complete professional human-level pentest report:"}
                                 ],
-                                groq_key, max_tokens=1200, temperature=0.3,
+                                groq_key, max_tokens=2000, temperature=0.4,
                             )
                         except Exception:
                             polished = None
