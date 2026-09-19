@@ -289,3 +289,35 @@ def generate_cyber_kill_chain(target: str, exposed_files: List[Dict[str, Any]], 
         }
     ]
     return kill_chain
+
+
+# 13. Direct Email Report Dispatcher (SMTP)
+def send_report_via_email(smtp_config: Dict[str, Any], recipient_email: str, subject: str, body: str, pdf_bytes: bytes, filename: str) -> bool:
+    """Sends professional executive security assessment report directly via SMTP email."""
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email.mime.application import MIMEApplication
+
+    try:
+        msg = MIMEMultipart()
+        msg['Subject'] = subject
+        msg['From'] = smtp_config.get('sender_email', 'security-alerts@mhzaly-soc.invalid')
+        msg['To'] = recipient_email
+
+        msg.attach(MIMEText(body, 'plain'))
+
+        if pdf_bytes:
+            attachment = MIMEApplication(pdf_bytes, Name=filename)
+            attachment['Content-Disposition'] = f'attachment; filename="{filename}"'
+            msg.attach(attachment)
+
+        server = smtplib.SMTP(smtp_config.get('smtp_server', 'smtp.gmail.com'), smtp_config.get('smtp_port', 587))
+        server.starttls()
+        server.login(smtp_config.get('smtp_user', ''), smtp_config.get('smtp_pass', ''))
+        server.sendmail(msg['From'], recipient_email, msg.as_string())
+        server.quit()
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send email report: {e}")
+        return False
