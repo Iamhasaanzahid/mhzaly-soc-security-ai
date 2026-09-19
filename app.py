@@ -1016,19 +1016,44 @@ class AnalystNarrator:
         return f"No {' or '.join(missing)} record found for this domain — that's a gap in email anti-spoofing defenses if this domain sends mail."
 
     def build(self) -> str:
-        lines = [random.choice(self.OPENERS).format(target=self.target), ""]
-        for para in [self._exposure_paragraph(), self._tech_paragraph(), self._headers_paragraph(),
-                     self._cookies_paragraph(), self._cors_paragraph(), self._ssl_paragraph(),
-                     self._email_security_paragraph(), self._ports_paragraph(), self._subdomains_paragraph(),
-                     self._cve_paragraph(), self._threat_intel_paragraph()]:
-            if para:
-                lines.append(para)
-                lines.append("")
-        lines.append(f"**Bottom line:** aggregate risk score is {self.risk.get('score', '?')}/100 ({self.risk.get('band', 'UNKNOWN')}).")
-        lines.append("")
-        lines.append("_Automated preliminary assessment — verify exposed paths and CVE matches by hand before acting on them, "
-                     "and don't treat a clean threat-intel/CVE result as a guarantee of no risk._")
-        return "\n".join(lines)
+        sections = [
+            f"### 🛡️ Executive Security Assessment — `{self.target}`",
+            f"**Assessment Date:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')} | **Overall Risk Rating:** **{self.risk.get('score', '?')}/100 ({self.risk.get('band', 'UNKNOWN')})**",
+            "",
+            "#### 1. Executive Summary & Overview",
+            random.choice(self.OPENERS).format(target=self.target),
+            "",
+            "#### 2. Perimeter & Attack Surface Findings",
+            self._exposure_paragraph(),
+            "",
+            self._tech_paragraph(),
+            "",
+            self._subdomains_paragraph(),
+            "",
+            self._ports_paragraph(),
+            "",
+            "#### 3. Edge & Infrastructure Hardening",
+            self._headers_paragraph(),
+            "",
+            self._ssl_paragraph(),
+            "",
+            self._cookies_paragraph(),
+            "",
+            self._cors_paragraph(),
+            "",
+            self._email_security_paragraph(),
+            "",
+            "#### 4. Vulnerability Correlation & Threat Intel",
+            self._cve_paragraph(),
+            "",
+            self._threat_intel_paragraph(),
+            "",
+            "#### 5. Strategic Remediation & Defense Roadmap",
+            f"**Bottom Line:** The target asset exhibits an aggregate risk score of **{self.risk.get('score', '?')}/100 ({self.risk.get('band', 'UNKNOWN')})**. Immediate action should focus on edge security header enforcement, TLS validation, and closing unverified or exposed perimeter assets.",
+            "",
+            "_Report compiled via MHZALY Unified Intelligence & Automated Verification Engine._"
+        ]
+        return "\n".join(sections)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
