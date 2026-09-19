@@ -393,9 +393,15 @@ class BugBountyReconEngine:
                                     verification_msg = "CONFIRMED CONFIG DISCLOSURE: Raw valid JSON structure exposed"
                                 except Exception:
                                     pass
-                        elif path == '/robots.txt' and ('user-agent:' in p_text or 'disallow:' in p_text):
-                            is_verified_leak = True
-                            verification_msg = "Public crawlers policy file reachable"
+                        elif path in ['/robots.txt', '/sitemap.xml']:
+                            return {
+                                'path': path,
+                                'status': 200,
+                                'size': len(raw_text),
+                                'verified_leak': False,
+                                'verification': "Standard public asset / crawlers policy file (Expected & Safe)",
+                                'is_critical_vuln': False
+                            }
                         elif path.startswith('/.git') and 'ref: refs/' in raw_text:
                             is_verified_leak = True
                             verification_msg = "CRITICAL VULNERABILITY: Publicly readable .git repository"
