@@ -372,6 +372,8 @@ class BugBountyReconEngine:
                     if p_resp.status_code == 200:
                         if any(err in p_text for err in ["not found", "404 page", "does not exist", "object not found"]):
                             return None
+                        if any(term in p_text for term in ['profilepage', 'profile:username', 'og:type" content="profile', 'sameas":[]', 'profile-page-root']):
+                            return None
                         if 'streamlit' in p_text and 'root' in p_text and len(p_text) > 500:
                             if abs(len(p_text) - len(base_homepage_text)) < 200:
                                 return None
