@@ -1371,9 +1371,35 @@ def main():
         .exec-banner { background: linear-gradient(90deg, #1f6feb 0%, #238636 100%); color: #ffffff; padding: 10px 18px; border-radius: 10px; font-weight: 700; font-size: 0.95rem; margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 4px 20px rgba(31, 111, 235, 0.4); }
         /* Claude / Gemini Style Chat Interface */
         [data-testid="stChatMessage"] { background: rgba(13, 17, 23, 0.95); border: 1px solid rgba(48, 54, 61, 0.8); border-radius: 14px; padding: 16px; margin-bottom: 12px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4); backdrop-filter: blur(12px); }
+        [data-testid="stChatMessage"][data-user-messages] { background: rgba(37, 99, 235, 0.22) !important; border-left: 3px solid #58a6ff !important; }
+        /* Global UI polish */
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap');
+        .stApp { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important; }
+        h1, h2, h3, .stMarkdown { font-family: 'Space Grotesk', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important; }
+        ::-webkit-scrollbar { width: 10px; }
+        ::-webkit-scrollbar-track { background: #0d1117; }
+        ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 8px; }
+        ::-webkit-scrollbar-thumb:hover { background: #58a6ff; }
+        [data-baseweb="tab-list"] { background: #0d1117; border-radius: 12px; padding: 4px; border: 1px solid rgba(48,54,61,0.6); }
+        [data-baseweb="tab"] { border-radius: 8px; color: #8b949e; font-weight: 600; }
+        [data-baseweb="tab"][aria-selected="true"] { background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%) !important; color: #ffffff !important; }
+        .mhzaly-hero { background: linear-gradient(135deg, rgba(13,17,23,0.85) 0%, rgba(22,27,34,0.75) 60%, rgba(31,111,235,0.22) 100%); border: 1px solid rgba(48,54,61,0.6); border-radius: 14px; padding: 24px; margin-bottom: 20px; box-shadow: 0 8px 32px rgba(0,0,0,0.45); }
+        .mhzaly-hero h1 { font-size: 2.5rem; margin: 0 0 8px; font-weight: 800; letter-spacing: -0.03em; background: linear-gradient(90deg, #58a6ff 0%, #bc8cff 55%, #f778ba 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+        .mhzaly-hero p.tagline { color: #8b949e; font-size: 1.05rem; margin: 0; }
+        [data-testid="stVerticalBlockBorder"], .stVerticalBlock { border: none; }
         </style>
     """, unsafe_allow_html=True)
 
+
+    st.markdown(
+        """
+        <div class="mhzaly-hero">
+        <h1>🛡️ The AI Security Engineer</h1>
+        <p class="tagline">Autonomous purple-team operations — real reconnaissance, verified findings, human-voice reports.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     if 'authenticated' not in st.session_state:
         st.session_state.authenticated = False
     if 'login_attempts' not in st.session_state:
