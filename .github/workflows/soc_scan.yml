@@ -33,6 +33,7 @@ jobs:
 
       - name: Execute All Active Targets Scan
         env:
+          PYTHONPATH: ${{ github.workspace }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           VIRUSTOTAL_API_KEY: ${{ secrets.VIRUSTOTAL_API_KEY }}
           ABUSEIPDB_API_KEY: ${{ secrets.ABUSEIPDB_API_KEY }}
@@ -42,7 +43,7 @@ jobs:
           # Per-target failures are recorded in scan_runs, reported to Discord,
           # and handled inside the scheduler — one bad target must not fail the
           # job (previously it did, which then skipped the DB commit below).
-          python3 core/scheduler.py run-all-once
+          python3 -m core.scheduler run-all-once
 
       - name: Commit and Push Updated Database
         # Run even if the scan step reported a problem so findings from the

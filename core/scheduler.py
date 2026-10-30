@@ -39,17 +39,18 @@ try:
     from . import db
     from . import connectors as c
     from . import notifier
+    from . import advanced_features as af
 except ImportError:
     try:
         from core import db
         from core import connectors as c
         from core import notifier
+        from core import advanced_features as af
     except ImportError:
         import db
         import connectors as c
         import notifier
-
-from core import advanced_features as af  # noqa: E402
+        import advanced_features as af
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("mhzaly-scheduler")
