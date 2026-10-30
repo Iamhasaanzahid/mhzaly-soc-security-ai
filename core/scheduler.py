@@ -107,6 +107,30 @@ def load_config() -> dict:
     return merged
 
 
+def safe_notify_alert(cfg: dict, target: str, category: str, severity: str,
+                       summary: str, details: dict) -> None:
+    """Best-effort Discord alert.
+
+    A broken/missing webhook must never abort a scan cycle: findings are
+    already persisted in SQLite by the time we get here, and an exception
+    escaping this call used to kill the whole run (and with it the DB commit
+    step in GitHub Actions).
+    """
+    try:
+        notifier.send_discord_alert(cfg.get("discord_webhook_url", ""), target,
+                                    category, severity, summary, details)
+    except Exception as e:
+        logger.warning(f"Discord alert failed for {target}: {e}")
+
+
+def safe_notify_text(cfg: dict, message: str) -> None:
+    """Best-effort Discord text message (scan summaries / errors)."""
+    try:
+        notifier.send_discord_text(cfg.get("discord_webhook_url", ""), message)
+    except Exception as e:
+        logger.warning(f"Discord notification failed: {e}")
+
+
 def run_scan_cycle(target: str, target_id: int, cfg: dict):
     """One full scan of one target. Every discrete fact goes through
     db.upsert_finding(), which only returns True (→ alert) if it's genuinely new."""
@@ -122,8 +146,8 @@ def run_scan_cycle(target: str, target_id: int, cfg: dict):
     except c.ScopeViolation as e:
         db.finish_scan_run(run_id, "BLOCKED", 0, error=str(e))
         logger.warning(f"Scan blocked for {target}: {e}")
-        notifier.send_discord_text(
-            cfg["discord_webhook_url"],
+        safe_notify_text(
+            cfg,
             f"🚫 Scan blocked for `{target}`: resolves to a non-public address. Removing from active scope is recommended."
         )
         return
@@ -140,7 +164,7 @@ def run_scan_cycle(target: str, target_id: int, cfg: dict):
                                        f"Open port {p['port']} ({p['service']})", p, "MEDIUM")
             if is_new:
                 new_count += 1
-                notifier.send_discord_alert(cfg["discord_webhook_url"], target, "Open Port",
+                safe_notify_alert(cfg, target, "Open Port",
                                            "MEDIUM", f"Port {p['port']}/{p['service']} is open", p)
 
         # 2. Subdomains via crt.sh
@@ -151,7 +175,7 @@ def run_scan_cycle(target: str, target_id: int, cfg: dict):
                                        f"Subdomain discovered: {sub}", {"subdomain": sub}, "INFO")
             if is_new:
                 new_count += 1
-                notifier.send_discord_alert(cfg["discord_webhook_url"], target, "New Subdomain",
+                safe_notify_alert(cfg, target, "New Subdomain",
                                            "INFO", sub, {"subdomain": sub})
 
         # 3. Exposed sensitive endpoints
@@ -162,7 +186,7 @@ def run_scan_cycle(target: str, target_id: int, cfg: dict):
                                        f"Exposed endpoint: {e['path']} ({e['status']})", e, "HIGH")
             if is_new:
                 new_count += 1
-                notifier.send_discord_alert(cfg["discord_webhook_url"], target, "Exposed Endpoint",
+                safe_notify_alert(cfg, target, "Exposed Endpoint",
                                            "HIGH", e["path"], e)
 
         # 4. Threat intel (VT + AbuseIPDB) — score changes matter, not just first sight
@@ -174,7 +198,7 @@ def run_scan_cycle(target: str, target_id: int, cfg: dict):
                                        vt, "CRITICAL")
             if is_new:
                 new_count += 1
-                notifier.send_discord_alert(cfg["discord_webhook_url"], target, "VirusTotal Flag",
+                safe_notify_alert(cfg, target, "VirusTotal Flag",
                                            "CRITICAL", f"{vt['malicious']} engines flagged malicious", vt)
 
         # 5. NVD — correlate against detected tech (kept simple: keyword = host's base name)
@@ -189,7 +213,7 @@ def run_scan_cycle(target: str, target_id: int, cfg: dict):
                                        cve, cve["severity"])
             if is_new:
                 new_count += 1
-                notifier.send_discord_alert(cfg["discord_webhook_url"], target, "CVE Match",
+                safe_notify_alert(cfg, target, "CVE Match",
                                            cve["severity"], cve["cve_id"], cve)
 
         # 6. ZoomEye — exposed services already indexed
@@ -200,7 +224,7 @@ def run_scan_cycle(target: str, target_id: int, cfg: dict):
                                        zm, "MEDIUM")
             if is_new:
                 new_count += 1
-                notifier.send_discord_alert(cfg["discord_webhook_url"], target, "ZoomEye Exposure",
+                safe_notify_alert(cfg, target, "ZoomEye Exposure",
                                            "MEDIUM", f"{zm.get('service')} on port {zm.get('port')}", zm)
 
         db.mark_scanned(target_id)
@@ -210,7 +234,7 @@ def run_scan_cycle(target: str, target_id: int, cfg: dict):
     except Exception as e:
         db.finish_scan_run(run_id, "ERROR", new_count, error=str(e))
         logger.error(f"Scan failed for {target}: {e}")
-        notifier.send_discord_text(cfg["discord_webhook_url"], f"⚠️ Scan error on `{target}`: {e}")
+        safe_notify_text(cfg, f"⚠️ Scan error on `{target}`: {e}")
 
 
 def run_forever():
@@ -226,7 +250,11 @@ def run_forever():
         for t in targets:
             interval_s = t["scan_interval_minutes"] * 60
             if now - last_run.get(t["id"], 0) >= interval_s:
-                run_scan_cycle(t["target"], t["id"], cfg)
+                try:
+                    run_scan_cycle(t["target"], t["id"], cfg)
+                except Exception as e:
+                    # One bad target must not stop the 24/7 monitoring loop.
+                    logger.error(f"Unhandled error scanning {t['target']}: {e}")
                 last_run[t["id"]] = now
         time.sleep(cfg["poll_interval_seconds"])
 
@@ -259,12 +287,27 @@ def main():
         run_scan_cycle(target, targets[target], load_config())
     elif cmd == "run-all-once":
         targets = db.list_targets(active_only=True)
+        if not targets:
+            logger.warning("No active targets in the database — nothing to scan.")
+            return 0
         cfg = load_config()
+        failures = 0
         for t in targets:
-            run_scan_cycle(t["target"], t["id"], cfg)
+            try:
+                run_scan_cycle(t["target"], t["id"], cfg)
+            except Exception as e:
+                failures += 1
+                logger.error(f"Unhandled error scanning {t['target']}: {e}")
+        if failures:
+            # Per-target failures are already recorded in scan_runs and sent to
+            # Discord; exiting non-zero here would skip the DB commit step in
+            # CI and lose the findings from the targets that DID succeed.
+            logger.warning(f"{failures}/{len(targets)} target(s) ended with an unhandled error.")
+        return 0
     else:
         print(__doc__)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
