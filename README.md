@@ -26,6 +26,7 @@
 | **Forensics & IOC Vault** | Persistent hashes / IPs / case notes |
 | **Generated Artefacts** | Hardening script, PoC verifier, WAF rules, branded PDF reports |
 | **Burp-style HTTP Repeater** | Craft arbitrary methods/headers/body and inspect raw responses |
+| **AI Triage Copilot** | One-click analyst brief per finding: executive summary, candidate Sigma rule, MITRE mapping, containment playbook, remediation |
 
 ---
 

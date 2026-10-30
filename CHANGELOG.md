@@ -32,6 +32,14 @@ Reliability + data-quality release.
 - 58-test pytest suite + CI workflow (ruff + pytest), LICENSE, SECURITY.md,
   CHANGELOG.md, docs/ARCHITECTURE.md, config.example.json, README.md.
 
+## [18.3.0] — 2026-10-30
+
+### Added
+- **AI Triage Copilot** (`core/advanced_features.generate_triage_brief` + new
+  `🤖 AI Triage Copilot` Streamlit module): turns any validated finding into a
+  structured analyst brief — executive summary, candidate Sigma rule, MITRE ATT&CK
+  mapping, containment playbook and remediation steps — via Groq (with fallback).
+
 ## [18.1.0]
 
 ### Fixed
