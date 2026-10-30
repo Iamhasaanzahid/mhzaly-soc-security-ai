@@ -1477,6 +1477,7 @@ def main():
                 "🔬 Digital Forensics & IOC Vault",
                 "🌐 On-Demand Threat Intel & IOC Lookup",
                 "⚡ Web HTTP Repeater & API Fuzzer",
+                "📊 Analytics & Reporting",
                 "Platform Configuration"
             ]
         )
@@ -2379,6 +2380,68 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
                         st.error(f"HTTP Request failed: {e}")
             else:
                 st.warning("Please specify a target URL.")
+
+    elif module == "📊 Analytics & Reporting":
+        st.markdown("# 📊 Analytics & Reporting")
+        st.markdown("<p style='color: #9ca3af;'>Fleet-level visibility over findings, severity mix, scan velocity and mean dwell time.</p>", unsafe_allow_html=True)
+
+        findings_rows = db.recent_findings(limit=500)
+        findings_df = pd.DataFrame(findings_rows)
+
+        if not findings_df.empty:
+            findings_df = findings_df[[
+                "target", "category", "severity", "summary", "first_seen", "last_seen"
+            ]].copy()
+            col_a, col_b = st.columns(2)
+            col_a.metric("Tracked Findings", len(findings_df))
+            col_b.metric("Critical / High", int(findings_df["severity"].isin(["CRITICAL", "HIGH"]).sum()))
+
+            st.markdown("### Findings by Severity")
+            sev_counts = findings_df.groupby("severity").size().reset_index(name="count")
+            st.dataframe(sev_counts, use_container_width=True)
+
+            st.markdown("### Findings by Category")
+            cat_counts = findings_df.groupby("category").size().reset_index(name="count")
+            st.dataframe(cat_counts, use_container_width=True)
+
+            st.markdown("### Mean Dwell Time (first_seen → last_seen, hours)")
+            dwell_hours = []
+            for _, r in findings_df.iterrows():
+                try:
+                    t0 = datetime.fromisoformat(str(r["first_seen"]))
+                    t1 = datetime.fromisoformat(str(r["last_seen"]))
+                    dwell_hours.append((t1 - t0).total_seconds() / 3600)
+                except Exception:
+                    pass
+            dwell_h = sum(dwell_hours) / len(dwell_hours) if dwell_hours else 0.0
+            col_b.metric("Mean Dwell Time", f"{dwell_h:.1f} h")
+
+            st.markdown("### Scan Velocity (new findings per run)")
+            runs_df = pd.DataFrame(db.recent_scan_runs(limit=10)).dropna(subset=["run_id"])
+            if not runs_df.empty:
+                runs_df = runs_df.sort_values("started_at")
+                series = pd.Series(
+                    runs_df["new_findings_count"].astype(float).tolist(),
+                    index=pd.to_datetime(runs_df["started_at"], errors="coerce"),
+                ).sort_index()
+                st.line_chart(series)
+
+            st.markdown("### Export")
+            st.download_button(
+                "⬇️ Download Findings CSV",
+                data=findings_df.to_csv(index=False).encode("utf-8"),
+                file_name="mhzaly_findings.csv",
+                mime="text/csv",
+            )
+            st.download_button(
+                "⬇️ Download Findings JSON",
+                data=json.dumps(findings_rows, default=str, indent=2).encode("utf-8"),
+                file_name="mhzaly_findings.json",
+                mime="application/json",
+            )
+
+        else:
+            st.info("No findings recorded yet — run a scan to start the analytics.")
 
     elif module == "Platform Configuration":
         st.markdown("# Platform Telemetry & API Status")

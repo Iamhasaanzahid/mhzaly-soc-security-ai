@@ -49,6 +49,8 @@ except ImportError:
         import connectors as c
         import notifier
 
+from core import advanced_features as af  # noqa: E402
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("mhzaly-scheduler")
 
@@ -71,6 +73,8 @@ DEFAULT_CONFIG = {
 # with every API key blank, since nobody wants real secrets committed to git.
 ENV_OVERRIDES = {
     "discord_webhook_url": "DISCORD_WEBHOOK_URL",
+    "slack_webhook_url": "SLACK_WEBHOOK_URL",
+    "teams_webhook_url": "TEAMS_WEBHOOK_URL",
     "nvd_api_key": "NVD_API_KEY",
     "virustotal_api_key": "VIRUSTOTAL_API_KEY",
     "abuseipdb_api_key": "ABUSEIPDB_API_KEY",
@@ -131,6 +135,51 @@ def safe_notify_text(cfg: dict, message: str) -> None:
         logger.warning(f"Discord notification failed: {e}")
 
 
+def alert_finding(cfg: dict, target: str, category: str, severity: str,
+                  summary: str, details: dict) -> None:
+    """Fan an alert out to every configured SIEM channel (Discord + Slack +
+    MS Teams). Best-effort: each channel is independent, failures never raise."""
+    alert_finding(cfg, target, category, severity, summary, details)
+    channels = {
+        "discord": cfg.get("discord_webhook_url", ""),
+        "slack": cfg.get("slack_webhook_url", ""),
+        "teams": cfg.get("teams_webhook_url", ""),
+    }
+    external = {k: v for k, v in channels.items() if k != "discord" and v}
+    if not external:
+        return
+    try:
+        af.send_multi_siem_alert(
+            {**channels, **external},
+            f"[{severity}] {category} — {target}",
+            summary,
+            severity,
+        )
+    except Exception as e:
+        logger.warning(f"SIEM fan-out failed: {e}")
+
+
+def _fanout_error(cfg: dict, message: str) -> None:
+    """Best-effort error text fan-out (Slack / MS Teams) — never raises."""
+    channels = {
+        "discord": cfg.get("discord_webhook_url", ""),
+        "slack": cfg.get("slack_webhook_url", ""),
+        "teams": cfg.get("teams_webhook_url", ""),
+    }
+    external = {k: v for k, v in channels.items() if k != "discord" and v}
+    if not external:
+        return
+    try:
+        af.send_multi_siem_alert(
+            {**channels, **external},
+            f"⚠️ SOC alert: {message}",
+            message,
+            "HIGH",
+        )
+    except Exception as e:
+        logger.warning(f"SIEM fan-out (error) failed: {e}")
+
+
 def run_scan_cycle(target: str, target_id: int, cfg: dict):
     """One full scan of one target. Every discrete fact goes through
     db.upsert_finding(), which only returns True (→ alert) if it's genuinely new."""
@@ -164,7 +213,7 @@ def run_scan_cycle(target: str, target_id: int, cfg: dict):
                                        f"Open port {p['port']} ({p['service']})", p, "MEDIUM")
             if is_new:
                 new_count += 1
-                safe_notify_alert(cfg, target, "Open Port",
+                alert_finding(cfg, target, "Open Port",
                                            "MEDIUM", f"Port {p['port']}/{p['service']} is open", p)
 
         # 2. Subdomains via crt.sh
@@ -175,7 +224,7 @@ def run_scan_cycle(target: str, target_id: int, cfg: dict):
                                        f"Subdomain discovered: {sub}", {"subdomain": sub}, "INFO")
             if is_new:
                 new_count += 1
-                safe_notify_alert(cfg, target, "New Subdomain",
+                alert_finding(cfg, target, "New Subdomain",
                                            "INFO", sub, {"subdomain": sub})
 
         # 3. Exposed sensitive endpoints
@@ -186,7 +235,7 @@ def run_scan_cycle(target: str, target_id: int, cfg: dict):
                                        f"Exposed endpoint: {e['path']} ({e['status']})", e, "HIGH")
             if is_new:
                 new_count += 1
-                safe_notify_alert(cfg, target, "Exposed Endpoint",
+                alert_finding(cfg, target, "Exposed Endpoint",
                                            "HIGH", e["path"], e)
 
         # 4. Threat intel (VT + AbuseIPDB) — score changes matter, not just first sight
@@ -198,7 +247,7 @@ def run_scan_cycle(target: str, target_id: int, cfg: dict):
                                        vt, "CRITICAL")
             if is_new:
                 new_count += 1
-                safe_notify_alert(cfg, target, "VirusTotal Flag",
+                alert_finding(cfg, target, "VirusTotal Flag",
                                            "CRITICAL", f"{vt['malicious']} engines flagged malicious", vt)
 
         # 5. NVD — correlate against detected tech (kept simple: keyword = host's base name)
@@ -213,7 +262,7 @@ def run_scan_cycle(target: str, target_id: int, cfg: dict):
                                        cve, cve["severity"])
             if is_new:
                 new_count += 1
-                safe_notify_alert(cfg, target, "CVE Match",
+                alert_finding(cfg, target, "CVE Match",
                                            cve["severity"], cve["cve_id"], cve)
 
         # 6. ZoomEye — exposed services already indexed
@@ -224,7 +273,7 @@ def run_scan_cycle(target: str, target_id: int, cfg: dict):
                                        zm, "MEDIUM")
             if is_new:
                 new_count += 1
-                safe_notify_alert(cfg, target, "ZoomEye Exposure",
+                alert_finding(cfg, target, "ZoomEye Exposure",
                                            "MEDIUM", f"{zm.get('service')} on port {zm.get('port')}", zm)
 
         db.mark_scanned(target_id)
@@ -234,7 +283,7 @@ def run_scan_cycle(target: str, target_id: int, cfg: dict):
     except Exception as e:
         db.finish_scan_run(run_id, "ERROR", new_count, error=str(e))
         logger.error(f"Scan failed for {target}: {e}")
-        safe_notify_text(cfg, f"⚠️ Scan error on `{target}`: {e}")
+        _fanout_error(cfg, f"⚠️ Scan error on `{target}`: {e}")
 
 
 def run_forever():
