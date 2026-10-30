@@ -8,11 +8,90 @@ import requests
 import logging
 import tempfile
 from datetime import datetime
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# 1. Multi-SIEM Webhook Connectors (Slack, Teams, Discord)
+# ── LLM helper (Groq) ────────────────────────────────────────────────────────
+GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_MODELS = ["openai/gpt-oss-120b", "llama3-70b-8192", "mixtral-8x7b-32768", "llama3-8b-8192"]
+
+
+def call_groq(groq_key: str, messages: List[Dict[str, str]], max_tokens: int = 1200, temperature: float = 0.3) -> Optional[str]:
+    """Groq-backed LLM call with key/model fallback chain (mirrors the AI
+    Security Engineer strategy). Returns None when unconfigured or on failure."""
+    if not groq_key:
+        return None
+    keys = [k.strip() for k in groq_key.split(',') if k.strip()]
+    for key in keys:
+        headers = {'Authorization': f'Bearer {key}', 'Content-Type': 'application/json'}
+        for model in GROQ_MODELS:
+            try:
+                resp = requests.post(GROQ_API_URL, json={
+                    'model': model, 'messages': messages, 'temperature': temperature, 'max_tokens': max_tokens,
+                }, headers=headers, timeout=25)
+                if resp.status_code == 200:
+                    return resp.json()['choices'][0]['message']['content']
+                if resp.status_code == 429:
+                    continue
+                if resp.status_code == 401:
+                    break
+            except Exception:
+                continue
+    return None
+
+
+# 2. AI Triage Copilot — turn a validated finding into an analyst brief
+#    (executive summary, candidate Sigma rule, MITRE mapping, playbook, remediation).
+LOCAL_TRIAGE_FALLBACK = """**AI Triage Copilot — Local fallback active (Groq key not configured).**
+
+- **Category:** {category}
+- **Severity:** {severity}
+- **Summary:** {summary}
+- **Indicators:** {indicators}
+- **CVE context:** {cve_context}
+
+Configure `GROQ_API_KEY` (or the sidebar Groq key) for a full AI-generated brief:
+1. Executive one-paragraph assessment
+2. Candidate Sigma detection rule (YAML)
+3. MITRE ATT&CK technique mapping (technique + tactic)
+4. Containment playbook (immediate steps)
+5. Remediation / hardening recommendations"""
+
+def generate_triage_brief(finding_category: str, severity: str, summary: str,
+                         indicators: List[str], groq_key: str = "",
+                         cve_context: str = "") -> str:
+    messages = [
+        {"role": "system", "content": (
+            "You are the MHZALY autonomous SOC triage analyst. You convert a validated security "
+            "finding into a professional analyst brief. Never invent technical indicators that "
+            "were not supplied. Be precise, concise and follow the requested structure exactly."
+        )},
+        {"role": "user", "content": (
+            f"Finding category: {finding_category}\n"
+            f"Severity: {severity}\n"
+            f"Summary: {summary}\n"
+            + (f"Indicators: {', '.join(indicators)}\n" if indicators else "")
+            + (f"CVE context: {cve_context}\n" if cve_context else "")
+            + "\nProduce exactly these sections:\n"
+            "1. Executive one-paragraph assessment\n"
+            "2. Candidate Sigma detection rule (YAML) for this class of finding\n"
+            "3. MITRE ATT&CK technique mapping (technique + tactic)\n"
+            "4. Containment playbook (immediate steps)\n"
+            "5. Remediation / hardening recommendations\n"
+            "Output as markdown with those exact headers."
+        )},
+    ]
+    ai = call_groq(groq_key, messages, max_tokens=1500, temperature=0.35)
+    if ai:
+        return ai
+    return LOCAL_TRIAGE_FALLBACK.format(
+        category=finding_category, severity=severity, summary=summary,
+        indicators=", ".join(indicators) or "n/a", cve_context=cve_context or "n/a",
+    )
+
+
+# 3. Multi-SIEM Webhook Connectors (Slack, Teams, Discord)
 def send_multi_siem_alert(channels: Dict[str, str], title: str, message: str, severity: str = "INFO") -> Dict[str, bool]:
     """Sends alerts to multiple platforms simultaneously (Discord, Slack, MS Teams)."""
     results = {}
@@ -47,7 +126,7 @@ def send_multi_siem_alert(channels: Dict[str, str], title: str, message: str, se
     return results
 
 
-# 2. Automated Remediation Script Generator
+# 4. Automated Remediation Script Generator
 def generate_remediation_script(infra: Dict[str, Any], exposed_files: List[Dict[str, Any]]) -> str:
     """Generates automated bash hardening script based on live scan findings."""
     lines = [
@@ -75,14 +154,14 @@ def generate_remediation_script(infra: Dict[str, Any], exposed_files: List[Dict[
     return "\n".join(lines)
 
 
-# 3. Role-Based Access Control (RBAC) Checker
+# 5. Role-Based Access Control (RBAC) Checker
 def check_operator_permissions(role: str, required_role: str) -> bool:
     """Validates if the operator role has sufficient privileges."""
     hierarchy = {"Viewer": 1, "Blue Team SOC Analyst": 2, "Red Team Operator": 3, "Administrator": 4}
     return hierarchy.get(role, 1) >= hierarchy.get(required_role, 1)
 
 
-# 4. SOAR Automated Playbook Execution
+# 6. SOAR Automated Playbook Execution
 def run_soar_playbook(incident_type: str, target: str) -> Dict[str, Any]:
     """Executes automated SOAR incident response playbooks."""
     actions_taken = []
@@ -104,7 +183,7 @@ def run_soar_playbook(incident_type: str, target: str) -> Dict[str, Any]:
     }
 
 
-# 5. OWASP Top 10 Risk Mapping
+# 7. OWASP Top 10 Risk Mapping
 def map_owasp_top_10(header_grade: str, exposed_paths: List[Dict[str, Any]]) -> List[str]:
     """Maps detected findings to OWASP Top 10 (2021) categories."""
     mappings = []
@@ -117,7 +196,7 @@ def map_owasp_top_10(header_grade: str, exposed_paths: List[Dict[str, Any]]) -> 
     return mappings
 
 
-# 6. World-Class Executive PDF Security Report Generator
+# 8. World-Class Executive PDF Security Report Generator
 try:
     from fpdf import FPDF
     FPDF_AVAILABLE = True
@@ -188,7 +267,7 @@ def generate_pdf_report(target: str, findings: List[Dict[str, Any]]) -> str:
     return tmp_file.name
 
 
-# 7. Automated Subdomain Takeover & CNAME Checker
+# 9. Automated Subdomain Takeover & CNAME Checker
 def check_subdomain_takeover(subdomains: List[str]) -> List[Dict[str, str]]:
     """Checks subdomains for potential dangling CNAME / takeover vectors."""
     vulnerable = []
@@ -201,7 +280,7 @@ def check_subdomain_takeover(subdomains: List[str]) -> List[Dict[str, str]]:
     return vulnerable
 
 
-# 8. AI Autonomous Pen-Test Planner
+# 10. AI Autonomous Pen-Test Planner
 def generate_pentest_plan(target: str, tech_stack: List[str]) -> List[str]:
     """Generates an intelligent multi-phase attack & defense pentest playbook."""
     plan = [
@@ -214,7 +293,7 @@ def generate_pentest_plan(target: str, tech_stack: List[str]) -> List[str]:
     return plan
 
 
-# 9. Exploit-DB & Public Exploit Correlation
+# 11. Exploit-DB & Public Exploit Correlation
 def correlate_public_exploits(cve_list: List[Any]) -> List[Dict[str, str]]:
     """Correlates CVEs with known public exploit PoCs."""
     exploits = []
@@ -230,7 +309,7 @@ def correlate_public_exploits(cve_list: List[Any]) -> List[Dict[str, str]]:
     return exploits
 
 
-# 10. Live WAF & Firewall Rule Generator
+# 12. Live WAF & Firewall Rule Generator
 def generate_waf_rules(exposed_paths: List[Dict[str, Any]]) -> str:
     """Generates enterprise WAF (ModSecurity / Cloudflare) blocking rules."""
     rules = [
@@ -245,7 +324,7 @@ def generate_waf_rules(exposed_paths: List[Dict[str, Any]]) -> str:
     return "\n".join(rules)
 
 
-# 11. MITRE ATT&CK TTP Mapping
+# 13. MITRE ATT&CK TTP Mapping
 def map_mitre_attck(exposed_paths: List[Dict[str, Any]], missing_headers: List[str], open_ports: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     """Maps scan findings to MITRE ATT&CK Enterprise Matrix TTPs."""
     ttps = []
@@ -258,7 +337,7 @@ def map_mitre_attck(exposed_paths: List[Dict[str, Any]], missing_headers: List[s
     return ttps
 
 
-# 12. Adversarial Cyber Kill Chain Generator
+# 14. Adversarial Cyber Kill Chain Generator
 def generate_cyber_kill_chain(target: str, exposed_files: List[Dict[str, Any]], missing_headers: List[str], open_ports: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     """Generates an adversarial Cyber Kill Chain mapping for the target."""
     kill_chain = [
@@ -291,7 +370,7 @@ def generate_cyber_kill_chain(target: str, exposed_files: List[Dict[str, Any]], 
     return kill_chain
 
 
-# 13. Direct Email Report Dispatcher (SMTP)
+# 15. Direct Email Report Dispatcher (SMTP)
 def send_report_via_email(smtp_config: Dict[str, Any], recipient_email: str, subject: str, body: str, pdf_bytes: bytes, filename: str) -> bool:
     """Sends professional executive security assessment report directly via SMTP email."""
     import smtplib

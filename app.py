@@ -1477,6 +1477,7 @@ def main():
                 "🔬 Digital Forensics & IOC Vault",
                 "🌐 On-Demand Threat Intel & IOC Lookup",
                 "⚡ Web HTTP Repeater & API Fuzzer",
+                "🤖 AI Triage Copilot",
                 "📊 Analytics & Reporting",
                 "Platform Configuration"
             ]
@@ -2380,6 +2381,25 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
                         st.error(f"HTTP Request failed: {e}")
             else:
                 st.warning("Please specify a target URL.")
+
+    elif module == "🤖 AI Triage Copilot":
+        st.markdown("# 🤖 AI Triage Copilot")
+        st.markdown("<p style='color: #9ca3af;'>Turn any validated finding into a professional analyst brief — executive summary, candidate Sigma rule, MITRE mapping, playbook and remediation — powered by Groq.</p>", unsafe_allow_html=True)
+
+        triage_category = st.selectbox("Finding Category", [
+            "open_port", "subdomain", "exposed_endpoint", "vt_malicious", "cve", "zoomeye_service",
+        ])
+        triage_sev = st.selectbox("Severity", ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"])
+        triage_summary = st.text_input("Finding Summary", placeholder="e.g. Open port 8080 (HTTP-Alt) exposed to the internet")
+        triage_indicators = st.text_input("Indicators (comma separated, optional)", placeholder="e.g. 1.2.3.4, evil.example.com")
+        triage_cve = st.text_input("CVE Context (optional)", placeholder="e.g. CVE-2024-1234")
+
+        if st.button("Generate Triage Brief", use_container_width=True):
+            indicators = [x.strip() for x in triage_indicators.split(",") if x.strip()]
+            groq_key = st.session_state.get("custom_groq_key") or st.secrets.get("GROQ_API_KEY", "")
+            with st.spinner("Triaging finding with the AI analyst..."):
+                brief = af.generate_triage_brief(triage_category, triage_sev, triage_summary, indicators, groq_key, triage_cve)
+            st.markdown(brief)
 
     elif module == "📊 Analytics & Reporting":
         st.markdown("# 📊 Analytics & Reporting")
