@@ -66,6 +66,15 @@ def init_db():
         )
     """)
 
+    # Migration: confidence/verified columns (added 2026-10). ALTER TABLE is
+    # idempotent here because we check PRAGMA first — older databases upgrade
+    # in place instead of losing their history.
+    existing = {row[1] for row in cursor.execute("PRAGMA table_info(findings)").fetchall()}
+    if "confidence" not in existing:
+        cursor.execute("ALTER TABLE findings ADD COLUMN confidence INTEGER")
+    if "verified" not in existing:
+        cursor.execute("ALTER TABLE findings ADD COLUMN verified INTEGER DEFAULT 0")
+
     # Digital Forensics Artifacts table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS forensics_artifacts (
@@ -181,8 +190,9 @@ def make_fingerprint(target: str, category: str, unique_marker: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def upsert_finding(target_id: int, category: str, fingerprint: str, 
-                   summary: str, details: dict, severity: str) -> bool:
+def upsert_finding(target_id: int, category: str, fingerprint: str,
+                   summary: str, details: dict, severity: str,
+                   confidence: Optional[int] = None, verified: bool = False) -> bool:
     """
     Inserts a finding if it's new. If it already exists, updates last_seen.
     Returns True ONLY if it is genuinely brand new (triggering a Discord alert).
@@ -208,10 +218,12 @@ def upsert_finding(target_id: int, category: str, fingerprint: str,
     else:
         # Brand new finding
         cursor.execute(
-            """INSERT INTO findings 
-               (target_id, category, fingerprint, summary, details, severity, first_seen, last_seen)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (target_id, category, fingerprint, summary, details_str, severity.upper(), now, now)
+            """INSERT INTO findings
+               (target_id, category, fingerprint, summary, details, severity,
+                confidence, verified, first_seen, last_seen)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (target_id, category, fingerprint, summary, details_str, severity.upper(),
+             confidence, 1 if verified else 0, now, now)
         )
         conn.commit()
         conn.close()

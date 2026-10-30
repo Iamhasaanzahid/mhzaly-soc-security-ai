@@ -27,6 +27,9 @@
 | **Generated Artefacts** | Hardening script, PoC verifier, WAF rules, branded PDF reports |
 | **Burp-style HTTP Repeater** | Craft arbitrary methods/headers/body and inspect raw responses |
 | **AI Triage Copilot** | One-click analyst brief per finding: executive summary, candidate Sigma rule, MITRE mapping, containment playbook, remediation |
+| **Precision Gate** | Every candidate is scored 0–100, de-duplicated and filtered by a confidence floor — fewer findings, each one defensible |
+| **Verified Web Surface** | Header grading, cookie flags, real certificate validation, bounded crawl, robots/sitemap mining, SPF/DMARC, dangling-CNAME takeover — with soft-404 calibration and content signatures on every probe |
+| **Human-Voice Reports** | Consultant-style assessments with a deterministic local narrative when no LLM key exists; `humanize()` strips chatbot tells and `check_hallucinations()` flags identifiers missing from the evidence |
 
 ---
 
@@ -123,13 +126,16 @@ Required repository secrets (Settings → Secrets and variables → Actions):
 app.py                    Streamlit dashboard (auth, all modules)
 core/
   connectors.py           SSRF guard, DNS/TLS/port scanning, crt.sh, CT log parsing, threat intel
+  hunter.py               verified web surface: headers, cookies, TLS, crawl, leak signatures, email auth
+  confidence.py           scoring / de-duplication / suppression gate
+  reporter.py             human-voice reports, hallucination guard, local narrative fallback
   scheduler.py            autonomous scan loop + CLI (used by GitHub Actions)
-  db.py                   SQLite persistence, fingerprint dedupe
+  db.py                   SQLite persistence, fingerprint dedupe, confidence columns
   notifier.py             Discord alerting with retry / 429 back-off
   advanced_features.py    SIEM fan-out, SOAR, OWASP/MITRE, PDF, email reports
 dashboard_tab.py          reusable SOC dashboard snippet
 docs/ARCHITECTURE.md      module map, data flow, security controls
-tests/                    pytest suite (58 tests)
+tests/                    pytest suite (94 tests)
 secrets.toml.example      copy to .streamlit/secrets.toml
 ```
 
@@ -139,7 +145,7 @@ secrets.toml.example      copy to .streamlit/secrets.toml
 
 ```bash
 pip install -r requirements.txt -r requirements-dev.txt
-pytest          # 58 tests
+pytest          # 94 tests
 ruff check .    # zero findings
 ```
 

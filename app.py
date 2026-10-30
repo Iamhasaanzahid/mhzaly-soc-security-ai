@@ -45,6 +45,7 @@ from core import db
 from core import connectors as c
 from core import notifier
 from core import scheduler
+from core import reporter
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -1571,14 +1572,14 @@ def main():
                         try:
                             polished = AutonomousAgentExecutor._call_groq(
                                 [
-                                    {'role': 'system', 'content': "You are a world-class Principal Bug Bounty Hunter and Senior Red-Team Lead. Act as an expert human security engineer analyzing real target reconnaissance data. Synthesize a meticulous, highly detailed, professional penetration testing report in markdown with expert technical depth, attack surface analysis, and precise defensive remediation."},
-                                    {'role': 'user', 'content': f"Target: {clean_target}\nRecon Data: {json.dumps(recon)}\nInfra Audit: {json.dumps(infra)}\nCVEs: {[v.to_dict() for v in cve_res]}\n\nDraft the complete professional human-level pentest report:"}
+                                    {'role': 'system', 'content': reporter.SYSTEM_PROMPT + "\n\n" + reporter.REPORT_SKELETON},
+                                    {'role': 'user', 'content': f"Target: {clean_target}\nRecon data (verified observations only): {json.dumps(recon)}\nInfrastructure audit: {json.dumps(infra)}\nCVE correlations: {[v.to_dict() for v in cve_res]}\n\nWrite the assessment. Attribute every claim to the data above, and state clearly what could not be tested."}
                                 ],
                                 groq_key, max_tokens=2000, temperature=0.4,
                             )
                         except Exception:
                             polished = None
-                    report_text = polished or local_report
+                    report_text = reporter.humanize(polished or local_report)
                     report_source = "Local analyst engine + LLM polish" if polished else "Local analyst engine (no LLM key configured)"
 
                     save_ai_security_engineer_scan(clean_target, risk, open_ports_count, exposed_count,

@@ -157,26 +157,57 @@ def scan_ports(domain: str) -> List[Dict[str, Any]]:
     return sorted(open_ports, key=lambda x: x['port'])
 
 
+def _days_until(not_after: str) -> int:
+    """Days until a certificate expires (negative when already expired)."""
+    from datetime import datetime, timezone
+    try:
+        expiry = datetime.strptime(not_after, "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return 0
+    return (expiry - datetime.now(timezone.utc)).days
+
+
 def check_ssl(domain: str) -> Dict[str, Any]:
-    """Inspects target SSL/TLS certificate validity and details."""
+    """Inspect the certificate the way a browser would.
+
+    The old implementation disabled both hostname checking and verification,
+    so an expired or self-signed certificate was returned as valid. This one
+    uses the default verifying context; a second non-verifying handshake is
+    only used to describe *why* trust failed.
+    """
     clean = clean_host(domain)
     try:
         ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        with socket.create_connection((clean, 443), timeout=3) as sock:
+        with socket.create_connection((clean, 443), timeout=4) as sock:
             with ctx.wrap_socket(sock, server_hostname=clean) as ssock:
                 cert = ssock.getpeercert()
-                if cert:
-                    return {
-                        'valid': True,
-                        'subject': dict(x[0] for x in cert.get('subject', [])),
-                        'issuer': dict(x[0] for x in cert.get('issuer', [])),
-                        'not_after': cert.get('notAfter')
-                    }
+                not_after = cert.get("notAfter")
+                return {
+                    'valid': True,
+                    'subject': dict(x[0] for x in cert.get('subject', [])),
+                    'issuer': dict(x[0] for x in cert.get('issuer', [])),
+                    'not_after': not_after,
+                    'days_left': _days_until(not_after) if not_after else None,
+                    'protocol': ssock.version(),
+                }
+    except ssl.SSLCertVerificationError as e:
+        detail = {'valid': False, 'untrusted': True, 'error': str(e)}
+        try:
+            raw_ctx = ssl.create_default_context()
+            raw_ctx.check_hostname = False
+            raw_ctx.verify_mode = ssl.CERT_NONE
+            with socket.create_connection((clean, 443), timeout=4) as sock:
+                with raw_ctx.wrap_socket(sock, server_hostname=clean) as ssock:
+                    cert = ssock.getpeercert()
+                    not_after = cert.get("notAfter")
+                    detail['not_after'] = not_after
+                    detail['days_left'] = _days_until(not_after) if not_after else None
+                    detail['protocol'] = ssock.version()
+        except Exception:
+            pass
+        return detail
     except Exception as e:
         return {'valid': False, 'error': str(e)}
-    return {'valid': False, 'error': 'Unknown SSL state'}
 
 
 def crtsh_subdomains(domain: str) -> List[str]:
@@ -199,25 +230,43 @@ def crtsh_subdomains(domain: str) -> List[str]:
 
 
 def fuzz_endpoints(base_url: str) -> List[Dict[str, Any]]:
-    """Fuzzes common sensitive configuration files and backup paths."""
+    """Probe well-known sensitive paths, calibrated against soft-404 pages.
+
+    A catch-all site answers 200 for every URL. Without the baseline probe
+    those responses were logged as "exposed endpoints". The baseline is taken
+    first and any response whose status and body size match it is dropped.
+    This is a coarse filter; `core.hunter.verify_sensitive_path()` adds the
+    content-signature check that the scheduler actually relies on.
+    """
     fuzz_paths = [
-        '/.env', '/robots.txt', '/sitemap.xml', '/git/config',
-        '/backup.zip', '/api/v1/users', '/swagger.ui', '/phpinfo.php',
-        '/config.json', '/auth/login', '/graphql', '/debug', '/admin'
+        '/.env', '/robots.txt', '/git/config', '/.git/config',
+        '/backup.zip', '/swagger.json', '/phpinfo.php',
+        '/.DS_Store', '/server-status', '/actuator/env', '/openapi.json',
     ]
     exposed = []
     parsed = urllib.parse.urlparse(base_url)
     origin = f"{parsed.scheme}://{parsed.netloc}"
-    
+
+    baseline = None
+    try:
+        probe = requests.get(origin + "/mhzaly-probe-404", timeout=3, verify=False)
+        baseline = (probe.status_code, len(probe.text or ""))
+    except Exception:
+        baseline = None
+
     for path in fuzz_paths:
         try:
             resp = requests.get(origin + path, timeout=3, verify=False)
-            if resp.status_code in [200, 403, 401] and len(resp.text) > 15:
-                text_lower = resp.text.lower()
-                if not any(err in text_lower for err in ["not found", "404 page", "does not exist"]):
-                    exposed.append({'path': path, 'status': resp.status_code, 'size': len(resp.text)})
+            body = resp.text or ""
+            if resp.status_code not in (200, 401, 403) or len(body) <= 15:
+                continue
+            if baseline and resp.status_code == baseline[0] and abs(len(body) - baseline[1]) <= max(64, baseline[1] // 10):
+                continue  # soft-404 / catch-all page
+            if any(err in body.lower() for err in ["not found", "404 page", "does not exist"]):
+                continue
+            exposed.append({'path': path, 'status': resp.status_code, 'size': len(body)})
         except Exception:
-            pass
+            continue
     return exposed
 
 
@@ -237,33 +286,62 @@ def virustotal_check(indicator: str, vt_key: str) -> Dict[str, Any]:
     return {'malicious': 0}
 
 
+def _cve_cpes(cve: Dict[str, Any]) -> List[str]:
+    """Extract the CPE criteria attached to a CVE configuration block."""
+    cpes: List[str] = []
+    for configuration in cve.get("configurations", []) or []:
+        for node in configuration.get("nodes", []) or []:
+            for match in node.get("cpeMatch", []) or []:
+                criteria = match.get("criteria")
+                if criteria:
+                    cpes.append(str(criteria).lower())
+    return cpes
+
+
 def nvd_search(keyword: str, nvd_key: str, strict: bool = True) -> List[Dict[str, Any]]:
-    """Searches NIST NVD v2.0 for correlated vulnerabilities."""
-    vulnerabilities = []
+    """Search NIST NVD v2.0 and only claim a CPE match when one exists.
+
+    The previous version set `match_confidence: 'cpe' if strict else 'keyword'`
+    whenever *any* result scored >= 4.0 — the flag described the caller's
+    setting, not the evidence. In strict mode a result is now kept only if a
+    CPE entry in the CVE's configuration block contains a keyword token.
+    """
+    vulnerabilities: List[Dict[str, Any]] = []
+    tokens = [t for t in re.split(r"[^a-z0-9]+", (keyword or "").lower()) if len(t) >= 3]
     try:
         url = "https://services.nvd.nist.gov/rest/json/cves/2.0"
         params = {'keywordSearch': keyword, 'resultsPerPage': 5}
-        headers = {}
-        if nvd_key:
-            headers['apiKey'] = nvd_key
-        resp = requests.get(url, params=params, headers=headers, timeout=10)
-        if resp.status_code == 200:
-            for item in resp.json().get('vulnerabilities', []):
-                cve = item.get('cve', {})
-                cve_id = cve.get('id', 'UNKNOWN')
-                desc = cve.get('descriptions', [{}])[0].get('value', 'No description.')
-                metrics = cve.get('metrics', {})
-                score, severity = 0.0, 'UNKNOWN'
-                if 'cvssMetricV31' in metrics:
-                    data = metrics['cvssMetricV31'][0].get('cvssData', {})
+        headers = {'apiKey': nvd_key} if nvd_key else {}
+        resp = requests.get(url, params=params, headers=headers, timeout=12)
+        if resp.status_code != 200:
+            return []
+        for item in resp.json().get('vulnerabilities', []):
+            cve = item.get('cve', {})
+            cve_id = cve.get('id', 'UNKNOWN')
+            desc = cve.get('descriptions', [{}])[0].get('value', 'No description.')
+            metrics = cve.get('metrics', {})
+            score, severity = 0.0, 'UNKNOWN'
+            for block in ('cvssMetricV31', 'cvssMetricV30'):
+                if block in metrics and metrics[block]:
+                    data = metrics[block][0].get('cvssData', {})
                     score = float(data.get('baseScore', 0.0))
                     severity = data.get('baseSeverity', 'UNKNOWN')
-                if score >= 4.0:
-                    vulnerabilities.append({
-                        'cve_id': cve_id, 'description': desc,
-                        'score': score, 'severity': severity.upper(),
-                        'match_confidence': 'cpe' if strict else 'keyword'
-                    })
+                    break
+
+            cpes = _cve_cpes(cve)
+            cpe_hit = bool(tokens) and any(tok in cpe for cpe in cpes for tok in tokens)
+            if strict and not cpe_hit:
+                continue
+            if score < 4.0:
+                continue
+            vulnerabilities.append({
+                'cve_id': cve_id,
+                'description': desc,
+                'score': score,
+                'severity': severity.upper(),
+                'match_confidence': 'cpe' if cpe_hit else 'keyword',
+                'cpe': next((c for c in cpes if any(tok in c for tok in tokens)), '') if cpe_hit else '',
+            })
     except Exception as e:
         logger.warning(f"NVD search failed: {e}")
     return vulnerabilities

@@ -40,17 +40,23 @@ try:
     from . import connectors as c
     from . import notifier
     from . import advanced_features as af
+    from . import confidence
+    from . import hunter
 except ImportError:
     try:
         from core import db
         from core import connectors as c
         from core import notifier
         from core import advanced_features as af
+        from core import confidence
+        from core import hunter
     except ImportError:
         import db
         import connectors as c
         import notifier
         import advanced_features as af
+        import confidence
+        import hunter
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("mhzaly-scheduler")
@@ -65,6 +71,9 @@ DEFAULT_CONFIG = {
     "urlscan_api_key": "",
     "poll_interval_seconds": 60,
     "strict_cve_matching": True,
+    "report_min_confidence": 70,
+    "report_min_severity": "MEDIUM",
+    "web_surface_max_pages": 15,
 }
 
 # Maps config.json keys to the environment variable that overrides them.
@@ -139,8 +148,13 @@ def safe_notify_text(cfg: dict, message: str) -> None:
 def alert_finding(cfg: dict, target: str, category: str, severity: str,
                   summary: str, details: dict) -> None:
     """Fan an alert out to every configured SIEM channel (Discord + Slack +
-    MS Teams). Best-effort: each channel is independent, failures never raise."""
-    alert_finding(cfg, target, category, severity, summary, details)
+    MS Teams). Best-effort: each channel is independent, failures never raise.
+
+    Note (2026-10): this function used to call itself unconditionally as its
+    first statement, which meant every new finding raised RecursionError and
+    aborted the rest of the scan cycle. It now delegates to safe_notify_alert.
+    """
+    safe_notify_alert(cfg, target, category, severity, summary, details)
     channels = {
         "discord": cfg.get("discord_webhook_url", ""),
         "slack": cfg.get("slack_webhook_url", ""),
@@ -182,11 +196,17 @@ def _fanout_error(cfg: dict, message: str) -> None:
 
 
 def run_scan_cycle(target: str, target_id: int, cfg: dict):
-    """One full scan of one target. Every discrete fact goes through
-    db.upsert_finding(), which only returns True (→ alert) if it's genuinely new."""
+    """One scan of one target, behind a verification gate.
+
+    Every observation is first a *candidate*. Only candidates that clear the
+    configured confidence and severity floors are written to the findings table
+    and counted as new; only verified, material findings are allowed to page a
+    human. The rest are counted and dropped, which is why the report stays
+    short enough to be read.
+    """
     host = c.clean_host(target)
-    new_count = 0
     run_id = db.start_scan_run(target_id)
+    candidates = []
     logger.info(f"Scanning {target} ...")
 
     # SSRF / scope guard — check once up front so the whole cycle skips cleanly
@@ -203,86 +223,99 @@ def run_scan_cycle(target: str, target_id: int, cfg: dict):
         return
 
     try:
-        # 1. DNS + ports + SSL + headers (deterministic, always run)
-        dns_data = c.check_dns(host)
+        # 1. Deterministic network facts (always run)
+        dns_data = c.check_dns(host)  # inventory only, surfaced in logs
         ports = c.scan_ports(host)
-        ssl_info = c.check_ssl(host)
-
+        risky = {21, 25, 445, 1433, 3306, 3389, 5432, 9200}
         for p in ports:
-            fp = db.make_fingerprint(target, "open_port", str(p["port"]))
-            is_new = db.upsert_finding(target_id, "open_port", fp,
-                                       f"Open port {p['port']} ({p['service']})", p, "MEDIUM")
-            if is_new:
-                new_count += 1
-                alert_finding(cfg, target, "Open Port",
-                                           "MEDIUM", f"Port {p['port']}/{p['service']} is open", p)
+            is_risky = p["port"] in risky
+            candidates.append({
+                "kind": "risky_port" if is_risky else "open_port",
+                "category": "Open Port",
+                "severity": "MEDIUM" if not is_risky else "MEDIUM",
+                "summary": f"Port {p['port']}/{p['service']} reachable from the internet",
+                "marker": f"port:{p['port']}",
+                "details": p,
+                "evidence": {"verified": True},
+                "verified": True,
+            })
 
-        # 2. Subdomains via crt.sh
-        subs = c.crtsh_subdomains(host)
-        for sub in subs:
-            fp = db.make_fingerprint(target, "subdomain", sub)
-            is_new = db.upsert_finding(target_id, "subdomain", fp,
-                                       f"Subdomain discovered: {sub}", {"subdomain": sub}, "INFO")
-            if is_new:
-                new_count += 1
-                alert_finding(cfg, target, "New Subdomain",
-                                           "INFO", sub, {"subdomain": sub})
+        # 2. Certificate transparency — inventory only. Subdomains are not
+        #    vulnerabilities; keeping them out of findings is what stops the
+        #    report turning into a list of 400 hostnames nobody reads.
+        subdomains = c.crtsh_subdomains(host)
 
-        # 3. Exposed sensitive endpoints
-        exposed = c.fuzz_endpoints(f"https://{host}")
-        for e in exposed:
-            fp = db.make_fingerprint(target, "exposed_endpoint", e["path"])
-            is_new = db.upsert_finding(target_id, "exposed_endpoint", fp,
-                                       f"Exposed endpoint: {e['path']} ({e['status']})", e, "HIGH")
-            if is_new:
-                new_count += 1
-                alert_finding(cfg, target, "Exposed Endpoint",
-                                           "HIGH", e["path"], e)
+        # 3. Verified web-surface hunt (headers, cookies, TLS, CORS, exposed
+        #    files with signature checks, crawl inventory, email auth records)
+        web = hunter.scan_web(host, {"max_pages": cfg.get("web_surface_max_pages", 15)})
+        candidates.extend(web.get("findings", []))
+        inventory = web.get("inventory", {})
 
-        # 4. Threat intel (VT + AbuseIPDB) — score changes matter, not just first sight
-        vt = c.virustotal_check(host, cfg["virustotal_api_key"])
-        if vt.get("malicious", 0) > 0:
-            fp = db.make_fingerprint(target, "vt_malicious", str(vt["malicious"]))
-            is_new = db.upsert_finding(target_id, "vt_malicious", fp,
-                                       f"VirusTotal flags {vt['malicious']} engines as malicious",
-                                       vt, "CRITICAL")
-            if is_new:
-                new_count += 1
-                alert_finding(cfg, target, "VirusTotal Flag",
-                                           "CRITICAL", f"{vt['malicious']} engines flagged malicious", vt)
+        # 4. CVE correlation against the fingerprinted stack. Only CPE-backed
+        #    matches are allowed through; keyword hits are leads, not findings.
+        for term in [t for t in (inventory.get("technologies") or []) if len(t) >= 3][:2]:
+            for cve in c.nvd_search(term, cfg.get("nvd_api_key", ""),
+                                    strict=cfg.get("strict_cve_matching", True)):
+                is_cpe = cve.get("match_confidence") == "cpe"
+                candidates.append({
+                    "kind": "cve_cpe" if is_cpe else "cve_keyword",
+                    "category": "CVE Correlation",
+                    "severity": cve.get("severity", "MEDIUM"),
+                    "summary": f"{cve['cve_id']} (CVSS {cve['score']}) matches {term}",
+                    "marker": cve["cve_id"],
+                    "details": cve,
+                    "evidence": {"verified": is_cpe, "match_confidence": cve.get("match_confidence")},
+                    "verified": is_cpe,
+                })
 
-        # 5. NVD — correlate against detected tech (kept simple: keyword = host's base name)
-        #    Strict/CPE-confirmed matching by default (see connectors.nvd_search docstring) —
-        #    this fires straight to Discord with no human review, so precision matters.
-        keyword = host.split(".")[0]
-        cves = c.nvd_search(keyword, cfg["nvd_api_key"], strict=cfg.get("strict_cve_matching", True))
-        for cve in cves:
-            fp = db.make_fingerprint(target, "cve", cve["cve_id"])
-            is_new = db.upsert_finding(target_id, "cve", fp,
-                                       f"{cve['cve_id']} (CVSS {cve['score']} {cve['severity']}, match: {cve.get('match_confidence', 'keyword')})",
-                                       cve, cve["severity"])
-            if is_new:
-                new_count += 1
-                alert_finding(cfg, target, "CVE Match",
-                                           cve["severity"], cve["cve_id"], cve)
+        # 5. Threat reputation — only actionable when multiple engines agree.
+        vt = c.virustotal_check(host, cfg.get("virustotal_api_key", ""))
+        if vt.get("malicious", 0) >= 2:
+            candidates.append({
+                "kind": "vt_malicious",
+                "category": "Threat Intelligence",
+                "severity": "CRITICAL",
+                "summary": f"{vt['malicious']} reputation engines flag the host as malicious",
+                "marker": f"vt:{vt['malicious']}",
+                "details": vt,
+                "evidence": {"verified": True},
+                "verified": True,
+            })
 
-        # 6. ZoomEye — exposed services already indexed
-        for zm in c.zoomeye_search(host, cfg["zoomeye_api_key"]):
-            fp = db.make_fingerprint(target, "zoomeye_service", f"{zm.get('ip')}:{zm.get('port')}")
-            is_new = db.upsert_finding(target_id, "zoomeye_service", fp,
-                                       f"ZoomEye: {zm.get('service')} on {zm.get('ip')}:{zm.get('port')}",
-                                       zm, "MEDIUM")
+        # 6. The gate
+        kept = confidence.gate(
+            candidates,
+            min_confidence=cfg.get("report_min_confidence", 70),
+            min_severity=cfg.get("report_min_severity", "MEDIUM"),
+        )
+        new_count = 0
+        alerted = 0
+        for f in kept:
+            fp = db.make_fingerprint(target, f["category"], f["marker"])
+            details = dict(f.get("details") or {})
+            details["_confidence"] = f["confidence"]
+            details["_verified"] = f["verified"]
+            is_new = db.upsert_finding(
+                target_id, f["category"], fp, f["summary"], details, f["severity"],
+                confidence=f["confidence"], verified=f["verified"],
+            )
             if is_new:
                 new_count += 1
-                alert_finding(cfg, target, "ZoomEye Exposure",
-                                           "MEDIUM", f"{zm.get('service')} on port {zm.get('port')}", zm)
+                if confidence.should_alert(f):
+                    alerted += 1
+                    alert_finding(cfg, target, f["category"], f["severity"],
+                                  f["summary"], details)
 
         db.mark_scanned(target_id)
         db.finish_scan_run(run_id, "SUCCESS", new_count)
-        logger.info(f"Done: {target} — {new_count} new finding(s).")
+        logger.info(
+            f"Done: {host} — {len(candidates)} candidate(s), {len(kept)} reported, "
+            f"{len(candidates) - len(kept)} suppressed, {new_count} new, {alerted} alerted "
+            f"({len(subdomains)} subdomains kept as inventory only)."
+        )
 
     except Exception as e:
-        db.finish_scan_run(run_id, "ERROR", new_count, error=str(e))
+        db.finish_scan_run(run_id, "ERROR", 0, error=str(e))
         logger.error(f"Scan failed for {target}: {e}")
         _fanout_error(cfg, f"⚠️ Scan error on `{target}`: {e}")
 

@@ -63,9 +63,11 @@ def generate_triage_brief(finding_category: str, severity: str, summary: str,
                          cve_context: str = "") -> str:
     messages = [
         {"role": "system", "content": (
-            "You are the MHZALY autonomous SOC triage analyst. You convert a validated security "
-            "finding into a professional analyst brief. Never invent technical indicators that "
-            "were not supplied. Be precise, concise and follow the requested structure exactly."
+            "You are a senior SOC analyst writing an internal triage note for the on-call "
+            "engineer. Write in plain first person, the way an experienced analyst actually "
+            "writes: what happened, what it means, what to do now. Never invent indicators, "
+            "CVE ids, hosts or exploit results that were not supplied. No emojis, no marketing "
+            "adjectives, no filler. If the evidence is thin, say so explicitly."
         )},
         {"role": "user", "content": (
             f"Finding category: {finding_category}\n"
@@ -83,12 +85,13 @@ def generate_triage_brief(finding_category: str, severity: str, summary: str,
         )},
     ]
     ai = call_groq(groq_key, messages, max_tokens=1500, temperature=0.35)
+    from .reporter import humanize
     if ai:
-        return ai
-    return LOCAL_TRIAGE_FALLBACK.format(
+        return humanize(ai)
+    return humanize(LOCAL_TRIAGE_FALLBACK.format(
         category=finding_category, severity=severity, summary=summary,
         indicators=", ".join(indicators) or "n/a", cve_context=cve_context or "n/a",
-    )
+    ))
 
 
 # 3. Multi-SIEM Webhook Connectors (Slack, Teams, Discord)
