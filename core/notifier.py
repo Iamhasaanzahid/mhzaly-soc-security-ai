@@ -42,9 +42,6 @@ SEVERITY_COLOR = {
     "LOW": 0x60A5FA, "INFO": 0x9CA3AF,
 }
 
-# Only these hosts are legitimate Discord webhook endpoints. Keeping the list
-# tight means a user-supplied URL can't turn the notifier into a request
-# forwarder (SSRF) if config.json or the env var is tampered with.
 ALLOWED_WEBHOOK_HOSTS = {
     "discord.com",
     "discordapp.com",
@@ -58,8 +55,6 @@ def is_valid_webhook_url(webhook_url: Any) -> bool:
     if not webhook_url or not isinstance(webhook_url, str):
         return False
     url = webhook_url.strip()
-    # Placeholders like "***" (what GitHub Actions prints for a masked secret)
-    # and pasted tokens are not URLs — reject before handing them to requests.
     if not url or any(ch.isspace() for ch in url) or "*" in url:
         return False
     parsed = urlparse(url)
@@ -83,8 +78,6 @@ def _post_with_rate_limit_retry(webhook_url: str, payload: dict, timeout: int = 
         try:
             resp = requests.post(webhook_url, json=payload, timeout=timeout)
         except requests.exceptions.RequestException as e:
-            # Deliberately broad: InvalidSchema/MissingSchema/InvalidURL are
-            # RequestException subclasses too, not just connection failures.
             logger.warning(f"Discord send attempt {attempt + 1} failed: {e}")
             time.sleep(1.5)
             continue
@@ -105,8 +98,7 @@ def _post_with_rate_limit_retry(webhook_url: str, payload: dict, timeout: int = 
 
 
 def send_discord_alert(webhook_url: str, target: str, category: str,
-                        severity: str, summary: str, details: Dict[str, Any]) -> bool:
-    """Send a finding embed. Returns False on any failure; never raises."""
+                       severity: str, summary: str, details: Dict[str, Any]) -> bool:
     if not isinstance(details, dict):
         details = {"detail": details}
 
@@ -115,16 +107,16 @@ def send_discord_alert(webhook_url: str, target: str, category: str,
         field_lines.append(f"**{k}**: `{v}`")
 
     embed = {
-        "title": f"🛰️ New finding — {target}",
+        "title": f"\U0001F6E0\uFE0F New finding — {target}",
         "description": f"**Category:** {category}\n**Summary:** {summary}",
         "color": SEVERITY_COLOR.get(severity, 0x9CA3AF),
-        "fields": [{"name": "Details", "value": "\n".join(field_lines) or "—", "inline": False}],
+        "fields": [{"name": "Details", "value": "\n".join(field_lines) or "\u2014", "inline": False}],
         "footer": {"text": "MHZALY Autonomous SOC"},
     }
 
     try:
         return _post_with_rate_limit_retry(webhook_url, {"embeds": [embed]})
-    except Exception as e:  # belt and braces — notifications are best-effort
+    except Exception as e:
         logger.warning(f"Discord alert construction failed: {e}")
         return False
 

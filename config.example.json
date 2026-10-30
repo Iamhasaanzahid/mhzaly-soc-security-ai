@@ -1,0 +1,10 @@
+{
+  "discord_webhook_url": "",
+  "nvd_api_key": "",
+  "virustotal_api_key": "",
+  "abuseipdb_api_key": "",
+  "zoomeye_api_key": "",
+  "urlscan_api_key": "",
+  "strict_cve_matching": true,
+  "poll_interval_seconds": 60
+}

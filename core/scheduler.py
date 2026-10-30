@@ -278,8 +278,11 @@ def main():
             print(f"[{t['id']}] {t['target']} — every {t['scan_interval_minutes']}min — "
                   f"last scanned: {t['last_scanned_at'] or 'never'}")
     elif cmd == "remove":
-        db.remove_target(int(sys.argv[2]))
-        print("Deactivated.")
+        # Soft delete on purpose: keeps findings/scan history (as documented).
+        if db.deactivate_target(int(sys.argv[2])):
+            print("Deactivated.")
+        else:
+            print(f"No target with id {sys.argv[2]}.")
     elif cmd == "scan-once":
         target = sys.argv[2]
         db.add_target(target)
