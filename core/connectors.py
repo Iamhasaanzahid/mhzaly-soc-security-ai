@@ -8,6 +8,7 @@ subdomain enumeration, endpoint fuzzing, and threat-intel API wrappers.
 
 import requests
 import logging
+import re
 import socket
 import ssl
 import ipaddress
@@ -55,6 +56,47 @@ def assert_public_host(hostname: str) -> None:
             raise ScopeViolation(f"Target '{clean}' resolves to non-public address ({ip_str}).")
         if ip_str == "169.254.169.254":
             raise ScopeViolation("Refusing to scan cloud metadata endpoint.")
+
+
+# A DNS label: 1-63 chars, alphanumeric + hyphen, no leading/trailing hyphen.
+_HOST_LABEL_RE = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)$")
+
+
+def is_valid_hostname(name: str, parent: str = "") -> bool:
+    """Strict hostname validation, optionally scoped to a parent domain.
+
+    Certificate Transparency logs (crt.sh) are dirty: `name_value` entries
+    contain email SANs ("user@example.com"), human-readable CA CNs
+    ("as207960 test intermediate"), wildcards, and unrelated domains that
+    merely *end* with the same characters ("m.testexample.com" vs
+    "example.com"). `str.endswith()` alone accepted all of those and wrote
+    them into the findings DB as "discovered subdomains".
+
+    This requires a real dot-boundary match (`name == parent` or
+    `name.endswith("." + parent)`) plus syntactically valid DNS labels.
+    """
+    if not name or len(name) > 253:
+        return False
+    name = name.strip().rstrip(".").lower()
+    if not name or any(ch.isspace() for ch in name):
+        return False
+    # Emails (crt.sh SANs), wildcards and SRV-style underscore records are not
+    # A/AAAA hostnames — drop them instead of reporting them as subdomains.
+    if "@" in name or "*" in name or "_" in name:
+        return False
+    labels = name.split(".")
+    if len(labels) < 2:
+        return False
+    if any(not _HOST_LABEL_RE.match(label) for label in labels):
+        return False
+    # TLD must not be numeric (that would be an IPv4 address, not a hostname).
+    if labels[-1].isdigit():
+        return False
+    if parent:
+        parent = parent.strip().rstrip(".").lower()
+        if name != parent and not name.endswith("." + parent):
+            return False
+    return True
 
 
 def verify_api_connection(service_name: str, endpoint: str, headers: dict = None) -> bool:
@@ -148,7 +190,7 @@ def crtsh_subdomains(domain: str) -> List[str]:
             for entry in data:
                 for name in str(entry.get('name_value', '')).split('\n'):
                     name = name.strip().lower()
-                    if name and '*' not in name and name.endswith(clean):
+                    if is_valid_hostname(name, clean):
                         names.add(name)
             return sorted(names)
     except Exception as e:

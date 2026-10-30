@@ -283,7 +283,10 @@ class SubdomainEnumEngine:
             for entry in data:
                 for name in str(entry.get('name_value', '')).split('\n'):
                     name = name.strip().lower()
-                    if name and '*' not in name and name.endswith(clean):
+                    # Reuse the strict validator from core.connectors: crt.sh
+                    # returns emails, CA CNs and look-alike domains
+                    # ("m.testexample.com") that a plain endswith() accepted.
+                    if c.is_valid_hostname(name, clean):
                         names.add(name)
             return sorted(names)[:limit]
         except Exception as e:
