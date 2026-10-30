@@ -83,3 +83,16 @@ def test_generate_report_without_key_uses_local_narrative():
 def test_fix_short_covers_known_kinds():
     assert reporter._fix_short({"kind": "verified_leak", "summary": "x"})
     assert reporter._fix_short({"kind": "unknown-kind", "summary": "do the thing"}) == "do the thing"
+
+
+def test_council_report_merges_perspectives_locally():
+    result = reporter.generate_council_report(
+        "example.com",
+        [{"kind": "weak_headers", "category": "Security Headers", "severity": "MEDIUM",
+          "summary": "Security headers grade F", "confidence": 88, "verified": True, "details": {}}],
+        {"origin": "https://example.com", "pages": ["https://example.com"], "technologies": []},
+    )
+    assert result["synthesized"] is False
+    assert "Human Council Assessment" in result["report"]
+    assert set(result["perspectives"]) >= {"Consultant", "Red Team", "Blue Team"}
+    assert result["report"]

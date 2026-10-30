@@ -1608,6 +1608,39 @@ def main():
                     report_text = reporter.humanize(polished or local_report)
                     report_source = "Local analyst engine + LLM polish" if polished else "Local analyst engine (no LLM key configured)"
 
+                    # Human Council: consultant + red team + blue team arbitration.
+                    council = reporter.generate_council_report(
+                        clean_target,
+                        [
+                            {
+                                "kind": "verified_leak" if e.get("verified_leak") else "weak_headers",
+                                "category": "Recon",
+                                "severity": "HIGH" if e.get("verified_leak") else "MEDIUM",
+                                "summary": f"Verified exposure: {e.get('path', 'unknown')}",
+                                "confidence": 90 if e.get("verified_leak") else 80,
+                                "verified": bool(e.get("verified_leak")),
+                                "details": e,
+                            }
+                            for e in recon.get("exposed_files", []) or []
+                            if e.get("verified_leak")
+                        ] or [
+                            {
+                                "kind": "weak_headers",
+                                "category": "Security Headers",
+                                "severity": "MEDIUM",
+                                "summary": f"Header grade {infra.get('headers', {}).get('grade', '?')}",
+                                "confidence": 80,
+                                "verified": True,
+                                "details": infra.get("headers", {}),
+                            }
+                        ],
+                        {**recon, **infra},
+                        groq_key,
+                    )
+                    if council.get("synthesized"):
+                        report_text = reporter.humanize(council["report"])
+                        report_source = "Human Council — AI arbitration (consultant + red team + blue team)"
+
                     save_ai_security_engineer_scan(clean_target, risk, open_ports_count, exposed_count,
                                                    len(cve_res), st.session_state.user)
 

@@ -345,6 +345,123 @@ def _fix_short(finding: Dict[str, Any]) -> str:
     return quick.get(kind, summary[:90])
 
 
+COUNCIL_SYSTEM = (
+    "You are a senior consultant arbitrating three independent analyst reports for an "
+    "internal security assessment: (1) an external consultant who led the investigation, "
+    "(2) an internal red team that treated the findings as exploitable surface, and "
+    "(3) an internal blue team that treated them as active threats requiring defensive playbooks. "
+    "You must produce ONE final executive assessment. Preserve the distinct judgement of each "
+    "perspective, but synthesise to a single conclusion: what is real, what is likely real, and "
+    "what order the engineering team should work in. Never introduce facts that are not in the "
+    "input. Write in first-person consultant voice, plain English, concrete, no filler."
+)
+
+
+def _red_team_text(findings: List[Dict[str, Any]], target: str) -> str:
+    lines = [
+        f"## Red Team Perspective — {target}",
+        "",
+        "Adversarial reading of the verified surface. The findings below are treated as live "
+        "exploitation candidates; each one would be exercised with a PoC before remediation.",
+        "",
+        f"- Verified findings in scope: {len(findings)}",
+    ]
+    for f in findings[:6]:
+        lines.append(
+            f"- [{str(f.get('severity', 'INFO')).upper()}] {f.get('summary', '')} "
+            f"(confidence {f.get('confidence', '?')}%)"
+        )
+    lines.append("")
+    lines.append(
+        "Red-team action posture: prioritise exploit-verification on the highest-confidence "
+        "verified findings first; treat anything the consultant rated advisory but the red team "
+        "found reproducible as the top of the queue."
+    )
+    return "\n".join(lines)
+
+
+def _blue_team_text(findings: List[Dict[str, Any]], target: str) -> str:
+    lines = [f"## Blue Team Perspective — {target}", "", "Defensive posture read against the same evidence:"]
+    if not findings:
+        lines.append("No verified findings to defend against; baseline posture appears acceptable.")
+    else:
+        lines.append(
+            f"{len(findings)} verified finding(s) — each warrants an incident playbook and a detection "
+            f"rule (Sigma/MITRE) before remediation closes the gap."
+        )
+    for f in findings[:6]:
+        lines.append(f"- [{str(f.get('severity', 'INFO')).upper()}] {f.get('summary', '')}")
+    lines.append("")
+    lines.append(
+        "Blue-team action posture: detection engineering first (SIGMA + MITRE mapping), then "
+        "host/header hardening, so the organisation retains the ability to detect regressions."
+    )
+    return "\n".join(lines)
+
+
+def _merge_perspectives(findings: List[Dict[str, Any]], target: str,
+                        perspectives: Dict[str, str]) -> str:
+    lines = [f"# Human Council Assessment — {target}", "",
+             "This assessment arbitrated three independent analyst perspectives and merged them "
+             "into a single executive conclusion.", ""]
+    for name, text in perspectives.items():
+        lines.append(f"## Perspective: {name}")
+        lines.append(text)
+        lines.append("")
+    lines.append(
+        "Final executive conclusion: "
+        + (
+            f"{len(findings)} verified finding(s) survived verification; "
+            + ("the strongest is in the highest severity class and should be fixed first."
+               if findings else
+               "nothing survived verification; posture is currently acceptable.")
+        )
+    )
+    return humanize("\n".join(lines))
+
+
+def generate_council_report(target: str, findings: List[Dict[str, Any]],
+                            inventory: Optional[Dict[str, Any]] = None,
+                            groq_key: str = "",
+                            analyst: str = "the AI Security Engineer") -> Dict[str, Any]:
+    """Human Council: consultant + red team + blue team, human-voice synthesis.
+
+    With a Groq key the three perspectives are arbitrated by the senior
+    consultant into a final executive report; without one, the merged local
+    narrative is produced deterministically.
+    """
+    perspectives = {
+        "Consultant": local_report(target, findings, inventory, analyst),
+        "Red Team": _red_team_text(findings, target),
+        "Blue Team": _blue_team_text(findings, target),
+    }
+    final_text: Optional[str] = None
+    synthesized = False
+    if groq_key:
+        try:
+            from .advanced_features import call_groq
+            user_content = (
+                f"Target: {target}\nFindings: {findings}\nInventory: {inventory}\n"
+                + "\n--- PERSPECTIVE REPORTS ---\n"
+                + "\n\n--- PERSPECTIVE REPORTS ---\n"
+                + "\n\n".join(f"## {n}\n{t}" for n, t in perspectives.items())
+                + "\n\nArbitrate the final executive assessment."
+            )
+            final_text = call_groq(groq_key, [
+                {"role": "system", "content": COUNCIL_SYSTEM},
+                {"role": "user", "content": user_content},
+            ], max_tokens=2200, temperature=0.3)
+            synthesized = bool(final_text)
+        except Exception:
+            synthesized = False
+    if not final_text:
+        final_text = _merge_perspectives(findings, target, perspectives)
+        synthesized = False
+    else:
+        final_text = humanize(final_text)
+    return {"report": final_text, "perspectives": perspectives, "synthesized": synthesized}
+
+
 def generate_report(target: str, findings: Iterable[Dict[str, Any]],
                     inventory: Optional[Dict[str, Any]] = None,
                     groq_key: str = "", audience: str = "the client's engineering team",
