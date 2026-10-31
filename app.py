@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MHZALY — AUTONOMOUS SOC & ATTACK-SURFACE INTELLIGENCE v19.0.0 - HARDENED SaaS EDITION
+MHZALY — AUTONOMOUS SOC & ATTACK-SURFACE INTELLIGENCE v19.0.1 - HARDENED SaaS EDITION
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Comprehensive Purple Team Operations Suite (Red Team Recon + Blue Team SOC Automation)
 Author: Muhammad Hassaan Zahid
@@ -481,7 +481,9 @@ class AutonomousAgentExecutor:
                         choice = data['choices'][0]
                         chunk = choice['message']['content']
                         full_text += chunk
-                        return full_text
+                        # Every model response passes the human-voice pass before
+                        # it can reach the UI, a report or a download.
+                        return reporter.humanize(full_text)
                     elif resp.status_code == 429:
                         continue
                     elif resp.status_code == 401:
@@ -489,7 +491,7 @@ class AutonomousAgentExecutor:
                 except Exception:
                     continue
         
-        return "\n[Local Fallback Engine active — Groq API rate limit or connection timeout reached across all fallback models/keys]."
+        return reporter.humanize("\nThe model request timed out across the configured keys and fallback models. Local analysis is still available.")
 
     @staticmethod
     def run_agentic_cycle(target: str, groq_key: str) -> Dict[str, Any]:
@@ -547,15 +549,42 @@ class AutonomousAgentExecutor:
             blocked_files = [e for e in exposed if not e.get('verified_leak')]
             missing_headers = [h for h, val in infra_audit.get('headers', {}).items() if val == 'MISSING']
             
-            cot_steps = [
-                "### 🧠 Deep-Thinking Human-Expert Chain-of-Thought (CoT) Analysis",
-                f"1. **Reconnaissance & Asset Discovery:** Target `{target}` resolved successfully. Fingerprinted stack: `{technologies if technologies else 'Standard Enterprise Web Stack'}` across `{len(subdomains)}` enumerated subdomains.",
-                f"2. **Attack Surface Triage:** Fuzzed `{len(exposed)}` potential sensitive paths. Verification engine confirmed `{len(real_leaks)}` live exploitable exposure(s) and `{len(blocked_files)}` properly blocked entries (403/401 WAF protection).",
-                f"3. **Threat Modeling & Hardening Review:** Identified `{len(missing_headers)}` missing critical HTTP security headers (`{', '.join(missing_headers) if missing_headers else 'None'}`). Cookie attribute hygiene and CORS policy evaluated.",
-                f"4. **Adversarial Exploitation Feasibility:** Based on surface posture, automated pivot vectors require edge security hardening and strict reverse-proxy configuration.",
-                f"5. **Strategic Defensive Recommendation:** Enforce HSTS/CSP, restrict edge endpoints, and verify TLS cipher suite configurations."
-            ]
-            ai_analysis = "\n\n".join(cot_steps)
+            tech_text = ", ".join(technologies) if technologies else "a standard web stack"
+            if missing_headers:
+                header_sentence = (
+                    f"The response is missing {len(missing_headers)} security headers "
+                    f"({', '.join(missing_headers)}), which is the kind of gap that turns a "
+                    "minor injection into a full account takeover once an attacker has a foothold."
+                )
+            else:
+                header_sentence = (
+                    "The core security headers are present, so the browser-side attack surface "
+                    "is narrower than it usually is at this stage."
+                )
+            if real_leaks:
+                leak_sentence = (
+                    f"{len(real_leaks)} sensitive path(s) returned content that matched a known "
+                    "signature, which means data that should never be public is reachable now."
+                )
+            else:
+                leak_sentence = (
+                    "Nothing sensitive came back with a matching signature, and the blocked "
+                    "responses are treated as edge protection rather than findings."
+                )
+            ai_analysis = (
+                f"I started with the certificate-transparency inventory: {target} fingerprints as "
+                f"{tech_text} and {len(subdomains)} subdomains are visible from the outside. That "
+                "inventory is context, not a finding list.\n\n"
+                f"I then probed {len(exposed)} paths that are commonly left exposed. {leak_sentence}\n\n"
+                f"{header_sentence}\n\n"
+                "The realistic threat here is opportunistic rather than targeted. Anyone running "
+                "an automated sweep will see the same surface I did, so the useful question is not "
+                "whether it can be found, but what happens on the first bad request.\n\n"
+                "If I had to order the work: close the verified exposure first (rotate anything "
+                "that may have been readable), then set HSTS and a restrictive CSP at the edge, "
+                "then review the cookie flags and CORS policy on the endpoints that set state. "
+                "None of that requires a re-architecture; it is configuration work."
+            )
 
         return {
             'target': target,
@@ -1514,7 +1543,7 @@ def main():
             st.session_state.authenticated = False
             st.rerun()
         st.markdown("---")
-        st.caption("MHZALY v19.0.0 · Verified findings · Human-voice reports")
+        st.caption("MHZALY v19.0.1 · Verified findings · Human-voice reports")
         st.caption("Authorized use only — scan assets you own or have written permission to test.")
 
     if module == "Command Telemetry Center":
@@ -1952,54 +1981,55 @@ except Exception as e:
                             "ai_analysis": ai_analysis_text,
                         }
 
-                        auto_report_markdown = f"""# MHZALY AUTONOMOUS AI AGENT SECURITY ASSESSMENT REPORT
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-* **Target Scope:** `{pipeline_target}`
-* **Lead Operator:** `{st.session_state.user} (Autonomous AI Agent Engine)`
-* **Timestamp:** `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`
-* **Aggregate Risk Score:** `{risk['score']}/100 ({risk['band']})`
-* **Classification:** FULLY AUTOMATED RED/BLUE AGENTIC INTELLIGENCE
-
-## 1. Executive Summary & Autonomous Recon Overview
-Autonomous AI Agent intelligence gathering was completed against `{pipeline_target}` with duplicate filtering enabled.
-- **VirusTotal Malicious Count:** `{ti_res['vt_summary']['malicious']}`
-- **AbuseIPDB Score:** `{ti_res['abuse_summary']['score']}%`
-- **Unique Detected Technologies:** `{tech_md}`
-
-## 2. Threat Intelligence & Reputation Triage
-### VirusTotal Telemetry
-- **Harmless Engines:** `{ti_res['vt_summary']['harmless']}`
-- **Community Reputation:** `{ti_res['vt_summary']['reputation']}`
-- **ASN / Owner:** `{ti_res['vt_summary']['registrar']}`
-
-### AbuseIPDB Telemetry
-- **Reports Count:** `{ti_res['abuse_summary']['reports']}`
-- **Country Code:** `{ti_res['abuse_summary']['country']}`
-- **ISP:** `{ti_res['abuse_summary']['isp']}`
-
-## 3. Deduplicated Attack Surface Discovery & Exposed Endpoints
-- **Clean Discovered Endpoints & Files (No Duplicates):**
-{exposed_md}
-
-### Enumerated Subdomains (Certificate Transparency)
-{subdomain_md}
-
-### Open Ports
-{ports_md}
-
-### Security Headers
-{headers_md}
-
-## 4. Correlated Unique Vulnerabilities (NIST NVD v2.0 - Deduplicated CVSS >= 4.0)
-_Match confidence: **cpe** = confirmed against the CVE's structured product data; **keyword** = description-text hit only, verify manually._
-{cve_list_md}
-
-## 5. Autonomous AI Agent Deep Architectural Analysis & Hardening Recommendations
-{ai_analysis_text}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-*Generated via MHZALY Autonomous AI Bug Bounty Platform*
-"""
+                        # The report is written from the verified findings, not
+                        # from the scanner's internal bookkeeping. Same writer as
+                        # the analyst-facing assessments, so the voice is
+                        # consistent across every module.
+                        report_findings = []
+                        for item in agent_result.get('exposed_files', []) or []:
+                            report_findings.append({
+                                "kind": "verified_leak" if item.get("verified_leak") else "exposed_path",
+                                "category": "Attack Surface",
+                                "severity": "HIGH" if item.get("verified_leak") else "MEDIUM",
+                                "summary": f"Exposed path {item.get('path', 'unknown')}",
+                                "confidence": 90 if item.get("verified_leak") else 70,
+                                "verified": bool(item.get("verified_leak")),
+                                "details": item,
+                            })
+                        header_info = infra_audit.get("headers", {}) or {}
+                        if header_info.get("missing"):
+                            report_findings.append({
+                                "kind": "weak_headers",
+                                "category": "Security Headers",
+                                "severity": "MEDIUM",
+                                "summary": (
+                                    f"Security header grade {header_info.get('grade', '?')} "
+                                    f"({header_info.get('score', 0)}/100)")
+                                if header_info.get("grade") else "Security headers incomplete",
+                                "confidence": 85,
+                                "verified": True,
+                                "details": header_info,
+                            })
+                        report_inventory = {
+                            "origin": f"https://{pipeline_target}",
+                            "pages": [],
+                            "technologies": tech_stack,
+                            "headers": header_info,
+                            "tls": infra_audit.get("tls", {}) or {},
+                            "subdomains": subdomains,
+                            "ports": infra_audit.get("ports", []) or [],
+                            "exposed_files": agent_result.get("exposed_files", []) or [],
+                        }
+                        engine_report = reporter.generate_report(
+                            pipeline_target,
+                            report_findings,
+                            report_inventory,
+                            analyst=f"{st.session_state.user} (autonomous agent)",
+                        )
+                        auto_report_markdown = engine_report["text"]
+                        if ai_analysis_text:
+                            auto_report_markdown += "\n\n## Analyst notes\n\n" + ai_analysis_text
+                        auto_report_markdown = reporter.humanize(auto_report_markdown)
 
                         discord_webhook = st.session_state.get("custom_discord_webhook") or st.secrets.get("DISCORD_WEBHOOK_URL", "")
                         if discord_webhook:
@@ -2082,7 +2112,7 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
 
         if "messages" not in st.session_state:
             st.session_state.messages = [
-                {"role": "assistant", "content": "Hello operator! I am your MHZALY AI Security Assistant. I am ready to assist you with vulnerability triage, exploit verification, log forensic analysis, and WAF hardening. How can I assist your operations today?"}
+                {"role": "assistant", "content": "I'm ready. Give me a target, a finding or a sample of logs and I'll work through it with you. I keep to what the evidence shows and say so when something cannot be verified."}
             ]
 
         st.markdown("**Quick Prompt Suggestions:**")
@@ -2103,7 +2133,7 @@ _Match confidence: **cpe** = confirmed against the CVE's structured product data
 
         if st.button("🗑️ Clear Chat History", use_container_width=False):
             st.session_state.messages = [
-                {"role": "assistant", "content": "Chat history reset. How can I assist your security operations today?"}
+                {"role": "assistant", "content": "History cleared. Start with a target, a finding or a snippet of logs."}
             ]
             st.rerun()
 

@@ -25,6 +25,28 @@ def test_humanize_keeps_facts():
     assert "api.example.com" in out
 
 
+def test_humanize_swaps_words_without_breaking_sentences():
+    out = reporter.humanize("We leverage TLS 1.3 and utilize HSTS on every edge node.")
+    low = out.lower()
+    assert "leverage" not in low
+    assert "utilize" not in low
+    assert "use TLS 1.3" in out
+    assert "use HSTS" in out
+
+
+def test_humanize_removes_filler_and_heading_noise():
+    out = reporter.humanize("### 🚀 Deep-Thinking Analysis\n\nIt is worth noting that the host is reachable.")
+    assert "🚀" not in out
+    assert "it is worth noting" not in out.lower()
+    assert "the host is reachable" in out
+
+
+def test_humanize_is_idempotent():
+    once = reporter.humanize("Certainly! Here is the report: we leverage HSTS.")
+    twice = reporter.humanize(once)
+    assert once == twice
+
+
 def test_check_hallucinations_flags_invented_cve():
     text = "This matches CVE-2021-44228 and CVE-2099-0001."
     warnings = reporter.check_hallucinations(text, {"findings": [{"cve": "CVE-2021-44228"}]})

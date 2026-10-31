@@ -3,6 +3,35 @@
 All notable changes to this project are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · [SemVer](https://semver.org/).
 
+## [19.0.1] — 2026-10-31
+
+Human-voice pass. Every generated surface now goes through the same writer
+instead of only the main assessment.
+
+### Changed
+
+- `humanize()` now swaps word-level tells for plain English (`leverage` → `use`,
+  `utilize` → `use`, `delve into` → `examine`) instead of deleting them, so
+  sentences stay grammatical. Filler clauses (`it is worth noting that`,
+  `please note that`) are removed, chat openers and heading emoji are stripped,
+  and the pass is idempotent.
+- `AutonomousAgentExecutor._call_groq()` applies the human-voice pass to every
+  model response before it can reach the UI, a report or a download — this
+  covers the chatbot, the Sigma generator and the pipeline analysis in one
+  place.
+- The autonomous pipeline report is now written by `reporter.generate_report()`
+  from verified findings instead of a hand-assembled banner template. The
+  robot framing (`━━━` rules, ALL-CAPS classification, generated-by footer) is
+  gone.
+- The no-key chain-of-thought fallback reads as four short paragraphs an
+  engineer would actually write, not five numbered headings with emoji.
+- Chat greeting and reset copy rewritten in the same voice.
+
+### Added
+
+- Three regression tests for `humanize()`: grammar-preserving word swaps,
+  filler and heading noise removal, and idempotence.
+
 ## [19.0.0] — 2026-10-31
 
 Project maturity release. No behaviour change to scanning; this release makes the

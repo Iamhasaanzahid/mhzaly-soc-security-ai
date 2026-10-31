@@ -26,17 +26,50 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .confidence import SEVERITY_RANK  # noqa: F401  (kept for callers)
 
+#: Word-level tells and the plain-English replacement used instead. Swapping a
+#: word keeps the sentence grammatical; deleting it does not.
+_AI_WORD_FIXES: Tuple[Tuple[str, str], ...] = (
+    (r"\bleverage\b", "use"),
+    (r"\bleveraging\b", "using"),
+    (r"\bleverages\b", "uses"),
+    (r"\butilize\b", "use"),
+    (r"\butilises\b", "uses"),
+    (r"\butilizes\b", "uses"),
+    (r"\butilizing\b", "using"),
+    (r"\bdelves? into\b", "examine"),
+    (r"\bdives? into\b", "examine"),
+    (r"\bin order to\b", "to"),
+    (r"\ba myriad of\b", "many"),
+    (r"\ba plethora of\b", "many"),
+    (r"\bfacilitates?\b", "helps"),
+    (r"\bcommence\b", "start"),
+    (r"\bendeavor to\b", "try to"),
+)
+
+#: Filler clauses that can be removed without leaving a broken sentence.
+_AI_SENTENCE_FILLER: Tuple[str, ...] = (
+    "it is important to note that", "it's important to note that",
+    "it is worth noting that", "it's worth noting that",
+    "please note that", "needless to say,",
+    "as previously mentioned,", "as mentioned earlier,",
+    "in today's fast-paced", "in today's rapidly evolving",
+)
+
 #: Phrases that make a technical report read like a chatbot wrote it.
 AI_ISMS: Tuple[str, ...] = (
     "as an ai", "as a language model", "i'm sorry", "i am sorry", "sure, here",
     "sure! here", "certainly!", "i hope this helps", "let me know if",
-    "delve into", "dive into", "in today's", "digital landscape", "ever-evolving",
+    "in today's", "digital landscape", "ever-evolving",
     "cutting-edge", "state-of-the-art", "game-changer", "seamless",
-    "leverage", "robust solution", "comprehensive solution", "unlock the",
+    "robust solution", "comprehensive solution", "unlock the",
     "it is important to note", "it's important to note", "in conclusion",
     "in summary,", "overall, it", "furthermore,", "moreover,", "additionally,",
     "embark on", "tapestry", "testament to", "navigate the", "revolutionize",
 )
+
+
+def _sentence_case_after_punctuation(text: str) -> str:
+    return re.sub(r"(^|[.!?]\s+)([a-z])", lambda m: m.group(1) + m.group(2).upper(), text)
 
 _EMOJI_RE = re.compile(
     "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF]+"
@@ -71,22 +104,34 @@ def humanize(text: str) -> str:
     """Remove the most obvious machine-writing tells from a report.
 
     Deliberately conservative: it edits phrasing, never facts. Numbers, host
-    names and identifiers are left untouched.
+    names and identifiers are left untouched. Word-level replacements keep the
+    sentence grammatical; only self-contained filler clauses are deleted.
     """
     if not text:
         return ""
     out = text
+    for pattern, replacement in _AI_WORD_FIXES:
+        out = re.sub(pattern, replacement, out, flags=re.I)
+    for phrase in _AI_SENTENCE_FILLER:
+        out = re.sub(re.escape(phrase) + r"\s*", "", out, flags=re.I)
     for phrase in AI_ISMS:
-        out = re.sub(re.escape(phrase), "", out, flags=re.I)
+        out = re.sub(re.escape(phrase) + r"\s*", "", out, flags=re.I)
     out = _EMOJI_RE.sub("", out)
     # Chatbot openers such as "Certainly! Here is the report:".
-    out = re.sub(r"^\s*(okay|ok|alright|certainly|sure)[,.!\s]+", "", out, flags=re.I)
-    # Normalise whitespace without destroying markdown structure.
+    out = re.sub(r"^\s*(okay|ok|alright|certainly|sure)\b[,.!\s]*", "", out, flags=re.I)
+    out = re.sub(
+        r"^\s*(here('| i)s|below is)\s+(the|your)\s+[^:\n]{0,48}:\s*",
+        "",
+        out,
+        flags=re.I,
+    )
+    # Tidy punctuation and spacing left behind by the removals.
+    out = re.sub(r"[ \t]+([,.;:])", r"\1", out)
+    out = re.sub(r"([,;:])(\s*\1)+", r"\1", out)
     out = re.sub(r"[ \t]+\n", "\n", out)
     out = re.sub(r"\n{3,}", "\n\n", out)
     out = re.sub(r" {2,}", " ", out)
-    # A stray capital after removing an opener reads badly; fix sentence starts.
-    out = re.sub(r"(^|[.!?]\s+)([a-z])", lambda m: m.group(1) + m.group(2).upper(), out)
+    out = _sentence_case_after_punctuation(out)
     return out.strip()
 
 
