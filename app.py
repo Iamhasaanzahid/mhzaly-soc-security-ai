@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MHZALY BUG BOUNTY & ENTERPRISE SECURITY PLATFORM v18.0 - HARDENED SaaS EDITION
+MHZALY — AUTONOMOUS SOC & ATTACK-SURFACE INTELLIGENCE v19.0.0 - HARDENED SaaS EDITION
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Comprehensive Purple Team Operations Suite (Red Team Recon + Blue Team SOC Automation)
 Author: Muhammad Hassaan Zahid
@@ -316,7 +316,7 @@ class BugBountyReconEngine:
                     report['dns'][rtype] = []
 
             session = requests.Session()
-            session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) PurpleTeamHunter/18.0'})
+            session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) PurpleTeamHunter/19.0'})
 
             t0 = time.time()
             resp = with_retry(session.get, target_url, timeout=8, verify=False, allow_redirects=True)
@@ -609,7 +609,7 @@ class NVDIntelligenceClient:
         seen_cves = set()
         try:
             params = {'keywordSearch': keyword, 'resultsPerPage': min(max_results, 30)}
-            headers = {'User-Agent': 'MHZALY-Purple-Team-Suite/18.1 (+authorized-security-tooling)'}
+            headers = {'User-Agent': 'MHZALY-Purple-Team-Suite/19.0 (+authorized-security-tooling)'}
             if self.nvd_key:
                 headers['apiKey'] = self.nvd_key
 
@@ -1513,6 +1513,9 @@ def main():
         if st.button("Terminate Session", use_container_width=True):
             st.session_state.authenticated = False
             st.rerun()
+        st.markdown("---")
+        st.caption("MHZALY v19.0.0 · Verified findings · Human-voice reports")
+        st.caption("Authorized use only — scan assets you own or have written permission to test.")
 
     if module == "Command Telemetry Center":
         st.markdown("# Purple Team Operations Center")

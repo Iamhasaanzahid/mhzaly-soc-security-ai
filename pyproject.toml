@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mhzaly-soc-security-ai"
-version = "18.2.0"
-description = "MHZALY Enterprise SOC & Bug Bounty AI Platform — autonomous purple-team recon, SOC automation and AI analyst."
+version = "19.0.0"
+description = "MHZALY — autonomous SOC and attack-surface intelligence. Verified findings, human-voice reports, purple-team operations in one dashboard."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

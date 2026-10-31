@@ -3,6 +3,47 @@
 All notable changes to this project are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · [SemVer](https://semver.org/).
 
+## [19.0.0] — 2026-10-31
+
+Project maturity release. No behaviour change to scanning; this release makes the
+platform presentable, maintainable and reviewable by people outside the project.
+
+### Added
+
+- **Human Council reporting** (`core/reporter.py`). Three perspectives are
+  generated from the same evidence — consultant, red team, blue team — and
+  arbitrated into one executive assessment. With a Groq key the arbitration is
+  performed by the model; without one, `_merge_perspectives()` produces a
+  deterministic local narrative. The Streamlit assessment reports
+  `report_source: "Human Council"` so provenance is never ambiguous.
+- **Professional documentation set**: rewritten `README.md` with CI, CodeQL,
+  version and test badges; `CONTRIBUTING.md` with the project's four design
+  principles; `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1).
+- **GitHub collaboration templates**: bug report and feature request issue
+  forms, pull request template with an explicit precision checklist.
+- **Supply-chain and code scanning**: `.github/workflows/codeql.yml`
+  (security-and-quality queries on push, PR and weekly schedule) and
+  `.github/dependabot.yml` for `pip` and `github-actions`.
+- **Developer ergonomics**: `Makefile` (`install`, `dev`, `test`, `lint`,
+  `scan`, `run`), `.pre-commit-config.yaml` (ruff, secret-key detection,
+  whitespace and YAML/TOML validation).
+- **Consistent rendering**: `.streamlit/config.toml` pins the dark theme and
+  server settings so local and deployed builds look identical.
+- Sidebar footer showing the running version and the authorized-use reminder.
+
+### Changed
+
+- Version bumped to `19.0.0` across `pyproject.toml`, changelog and UI.
+- README now documents the precision pipeline explicitly: verification →
+  confidence gate → report/alert, including the suppression path.
+- Consolidated the duplicated `18.3.0` changelog section; the AI Triage Copilot
+  entry now lives under `18.2.1`.
+
+### Fixed
+
+- Changelog contained two sections numbered `18.3.0`, which made releases
+  ambiguous.
+
 ## [18.3.0] — 2026-10-31
 
 Precision and report-quality release. The platform now reports *fewer* findings
@@ -84,7 +125,7 @@ Reliability + data-quality release.
 - 58-test pytest suite + CI workflow (ruff + pytest), LICENSE, SECURITY.md,
   CHANGELOG.md, docs/ARCHITECTURE.md, config.example.json, README.md.
 
-## [18.3.0] — 2026-10-30
+## [18.2.1] — 2026-10-30
 
 ### Added
 - **AI Triage Copilot** (`core/advanced_features.generate_triage_brief` + new

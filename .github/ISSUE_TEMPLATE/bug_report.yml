@@ -1,0 +1,59 @@
+name: Bug report
+description: Something is broken or behaving incorrectly.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. Please **never paste real API keys,
+        webhook URLs or client data** — redact anything sensitive.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: A clear description of the bug and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run `streamlit run app.py`
+        2. Open the AI Security Engineer tab
+        3. Enter target ...
+        4. See error ...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: Output of `git rev-parse --short HEAD`, or the release tag.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Streamlit UI
+        - Autonomous scheduler / cron
+        - Recon connectors
+        - Verified web hunter
+        - Reports (AI / Human Council)
+        - Database / persistence
+        - CI / workflows
+        - Other
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Redact tokens, cookies, webhook URLs and client data before pasting.
+      render: shell
