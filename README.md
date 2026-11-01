@@ -8,8 +8,8 @@
 [![CodeQL](https://github.com/Iamhasaanzahid/mhzaly-soc-security-ai/actions/workflows/codeql.yml/badge.svg)](https://github.com/Iamhasaanzahid/mhzaly-soc-security-ai/actions/workflows/codeql.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-3776AB?logo=python&logoColor=white)](pyproject.toml)
 [![Streamlit](https://img.shields.io/badge/streamlit-1.28%2B-FF4B4B?logo=streamlit&logoColor=white)](https://streamlit.io)
-[![Tests](https://img.shields.io/badge/tests-98%20passing-brightgreen)](tests)
-[![Version](https://img.shields.io/badge/version-19.0.1-blueviolet)](CHANGELOG.md)
+[![Tests](https://img.shields.io/badge/tests-25%20passing-brightgreen)](tests)
+[![Version](https://img.shields.io/badge/version-20.0.0-blueviolet)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 </div>

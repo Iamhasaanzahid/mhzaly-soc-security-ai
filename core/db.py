@@ -10,7 +10,11 @@ import hashlib
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
+from .evidence import EvidenceLedger
+
 DB_PATH = "mhzaly_soc.db"
+
+LEDGER = EvidenceLedger(DB_PATH)
 
 
 def get_connection():
@@ -84,6 +88,36 @@ def init_db():
             severity TEXT,
             case_notes TEXT,
             logged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # Append-only hash-chained evidence ledger (created by core.evidence too,
+    # but the path must be explicit here so the module-level API stays consistent).
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS evidence_ledger (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            recorded_at TEXT NOT NULL,
+            target TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            finding_fp TEXT NOT NULL,
+            severity TEXT NOT NULL,
+            confidence INTEGER NOT NULL,
+            payload TEXT NOT NULL,
+            prev_hash TEXT NOT NULL,
+            record_hash TEXT NOT NULL
+        )
+    """)
+
+    # Scan-to-scan change log
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS scan_deltas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            target TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            change_type TEXT NOT NULL,
+            finding_fp TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
@@ -283,3 +317,77 @@ def get_forensics_artifacts(limit: int = 50) -> List[Dict[str, Any]]:
     rows = [dict(row) for row in cursor.fetchall()]
     conn.close()
     return rows
+
+
+# ── Evidence ledger & proof packs ─────────────────────────────────────────────
+
+def record_evidence(run_id, target: str, findings: List[Dict[str, Any]]) -> str:
+    """Append one scan run's verified findings to the hash-chained ledger."""
+    return LEDGER.record_run(str(run_id), target, findings)
+
+
+def verify_evidence() -> Dict[str, Any]:
+    return LEDGER.verify()
+
+
+def export_proof_pack(run_id: str, path: str) -> Dict[str, Any]:
+    return LEDGER.export_proof_pack(run_id, path)
+
+
+# ── Findings for a target (used by the delta engine) ─────────────────────────
+
+def findings_for_target(target: str) -> List[Dict[str, Any]]:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT f.*, t.target
+        FROM findings f
+        JOIN targets t ON f.target_id = t.id
+        WHERE t.target = ?
+        ORDER BY f.last_seen DESC
+        """,
+        (target.strip().lower(),),
+    )
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return rows
+
+
+# ── Scan deltas ─────────────────────────────────────────────────────────────
+
+def store_delta(target: str, run_id: str, delta: Dict[str, Any]) -> bool:
+    conn = get_connection()
+    cursor = conn.cursor()
+    summary = delta.get("summary") or {}
+    types = (
+        ("NEW", summary.get("new", 0)),
+        ("RESOLVED", summary.get("resolved", 0)),
+        ("ESCALATED", summary.get("escalated", 0)),
+        ("DE_ESCALATED", summary.get("de_escalated", 0)),
+        ("PERSISTING", summary.get("persisting", 0)),
+    )
+    ok = True
+    for change_type, count in types:
+        if not count:
+            continue
+        for f in delta.get(change_type.lower() + "_findings") or []:
+            cursor.execute(
+                "INSERT INTO scan_deltas (target, run_id, change_type, finding_fp) VALUES (?, ?, ?, ?)",
+                (target, str(run_id), change_type, str(f.get("kind") or "") + ":" + str(f.get("marker") or "")),
+            )
+    conn.commit()
+    conn.close()
+    return ok
+
+
+def get_latest_delta(target: str) -> Optional[Dict[str, Any]]:
+    conn = get_connection()
+    cursor = conn.cursor()
+    row = cursor.execute(
+        "SELECT * FROM scan_deltas ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    conn.close()
+    if not row:
+        return None
+    return dict(row)

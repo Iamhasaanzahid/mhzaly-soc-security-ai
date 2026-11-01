@@ -306,6 +306,19 @@ def run_scan_cycle(target: str, target_id: int, cfg: dict):
                     alert_finding(cfg, target, f["category"], f["severity"],
                                   f["summary"], details)
 
+        from .delta import delta_between
+        previous_findings = db.findings_for_target(target)
+        current_findings = [
+            {
+                "kind": f["kind"], "marker": f["marker"], "summary": f["summary"],
+                "severity": f["severity"], "confidence": f["confidence"], "verified": f["verified"],
+                "details": f.get("details") or {},
+            }
+            for f in kept
+        ]
+        delta = delta_between(previous_findings, current_findings, target)
+        db.store_delta(target, run_id, delta)
+        db.record_evidence(run_id, target, current_findings)
         db.mark_scanned(target_id)
         db.finish_scan_run(run_id, "SUCCESS", new_count)
         logger.info(
@@ -389,6 +402,21 @@ def main():
             # Discord; exiting non-zero here would skip the DB commit step in
             # CI and lose the findings from the targets that DID succeed.
             logger.warning(f"{failures}/{len(targets)} target(s) ended with an unhandled error.")
+        return 0
+    elif cmd == "verify-evidence":
+        status = db.verify_evidence()
+        print(json.dumps(status, default=str, indent=2))
+        return 0
+    elif cmd == "export-evidence":
+        if len(sys.argv) < 4:
+            print("usage: python -m core.scheduler export-evidence <run_id> <out_path.json>")
+            return 2
+        manifest = db.export_proof_pack(sys.argv[2], sys.argv[3])
+        print(json.dumps({
+            "run_id": manifest.get("run_id"),
+            "records": len(manifest.get("records") or []),
+            "chain_head": manifest.get("chain_head"),
+        }, default=str, indent=2))
         return 0
     else:
         print(__doc__)

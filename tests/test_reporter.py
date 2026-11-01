@@ -118,3 +118,22 @@ def test_council_report_merges_perspectives_locally():
     assert "Human Council Assessment" in result["report"]
     assert set(result["perspectives"]) >= {"Consultant", "Red Team", "Blue Team"}
     assert result["report"]
+
+
+def test_council_includes_skeptic_perspective():
+    result = reporter.generate_council_report(
+        "example.com",
+        [{"kind": "weak_headers", "category": "Security Headers", "severity": "MEDIUM",
+          "summary": "Security headers grade F", "confidence": 88, "verified": True, "details": {}}],
+        {"origin": "https://example.com", "pages": ["https://example.com"], "technologies": []},
+    )
+    assert "Skeptic" in result["perspectives"]
+    assert "Human Council Assessment" in result["report"]
+
+
+def test_local_report_carries_evidence_reference():
+    text = reporter.local_report("example.com", [
+        {"kind": "weak_headers", "severity": "MEDIUM", "confidence": 88, "verified": True,
+         "summary": "missing HSTS", "marker": "HSTS", "details": {}},
+    ], {"origin": "https://example.com", "pages": ["https://example.com"], "technologies": []})
+    assert "Evidence reference" in text

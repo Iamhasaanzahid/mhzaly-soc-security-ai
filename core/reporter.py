@@ -279,6 +279,11 @@ def local_report(target: str, findings: Iterable[Dict[str, Any]],
             if observation:
                 out.append(f"What I observed: `{observation}`")
                 out.append("")
+            from .evidence import fingerprint_of
+            fp = fingerprint_of(target, str(f.get("kind") or ""), str(f.get("marker") or ""),
+                                str(f.get("summary") or ""), str(f.get("severity") or ""))
+            out.append(f"Evidence reference: `{fp[:16]}…`")
+            out.append("")
             impact = _impact_for(f)
             if impact:
                 out.append(impact)
@@ -391,14 +396,17 @@ def _fix_short(finding: Dict[str, Any]) -> str:
 
 
 COUNCIL_SYSTEM = (
-    "You are a senior consultant arbitrating three independent analyst reports for an "
+    "You are a senior consultant arbitrating four independent analyst reports for an "
     "internal security assessment: (1) an external consultant who led the investigation, "
-    "(2) an internal red team that treated the findings as exploitable surface, and "
-    "(3) an internal blue team that treated them as active threats requiring defensive playbooks. "
-    "You must produce ONE final executive assessment. Preserve the distinct judgement of each "
-    "perspective, but synthesise to a single conclusion: what is real, what is likely real, and "
-    "what order the engineering team should work in. Never introduce facts that are not in the "
-    "input. Write in first-person consultant voice, plain English, concrete, no filler."
+    "(2) an internal red team that treated the findings as exploitable surface, (3) an internal "
+    "blue team that treated them as active threats requiring defensive playbooks, and "
+    "(4) an internal sceptic whose job is to challenge every conclusion: to state what an "
+    "attacker would actually need, what would disprove a finding, and what the organisation "
+    "should prove before it fixes. You must produce ONE final executive assessment. Preserve "
+    "the distinct judgement of each perspective, but synthesise to a single conclusion: what is "
+    "real, what is likely real, and what order the engineering team should work in. Never "
+    "introduce facts that are not in the input. Write in first-person consultant voice, plain "
+    "English, concrete, no filler."
 )
 
 
@@ -444,10 +452,36 @@ def _blue_team_text(findings: List[Dict[str, Any]], target: str) -> str:
     return "\n".join(lines)
 
 
+def _skeptic_text(findings: List[Dict[str, Any]], target: str) -> str:
+    lines = [
+        f"## Skeptic Perspective — {target}",
+        "",
+        "Adversarial thinking about the findings themselves. Not to dismiss them, but to "
+        "challenge the confidence before the engineering team commits budget.",
+    ]
+    if not findings:
+        lines.append("No verified findings to challenge; the posture is currently acceptable, but "
+                     "that verdict is exactly what a sceptical engineer should not have to sign off on "
+                     "without independent proof.")
+    for f in findings[:6]:
+        lines.append(
+            f"- [{str(f.get('severity', 'INFO')).upper()}] {f.get('summary', '')} "
+            f"(confidence {f.get('confidence', '?')}%)"
+        )
+    lines.append("")
+    lines.append(
+        "Sceptic action posture: for each finding ask what an attacker would need, what would "
+        "falsify it, and whether the absence of the evidence (blocked file, clean headers, quiet "
+        "domain) is itself being proven. A finding that cannot be disproved is still a risk; a "
+        "finding that cannot be proved should not ship as 'verified'."
+    )
+    return "\n".join(lines)
+
+
 def _merge_perspectives(findings: List[Dict[str, Any]], target: str,
                         perspectives: Dict[str, str]) -> str:
     lines = [f"# Human Council Assessment — {target}", "",
-             "This assessment arbitrated three independent analyst perspectives and merged them "
+             "This assessment arbitrated multiple independent analyst perspectives and merged them "
              "into a single executive conclusion.", ""]
     for name, text in perspectives.items():
         lines.append(f"## Perspective: {name}")
@@ -469,16 +503,17 @@ def generate_council_report(target: str, findings: List[Dict[str, Any]],
                             inventory: Optional[Dict[str, Any]] = None,
                             groq_key: str = "",
                             analyst: str = "the AI Security Engineer") -> Dict[str, Any]:
-    """Human Council: consultant + red team + blue team, human-voice synthesis.
+    """Human Council: consultant + red team + blue team + skeptic, human-voice synthesis.
 
-    With a Groq key the three perspectives are arbitrated by the senior
-    consultant into a final executive report; without one, the merged local
-    narrative is produced deterministically.
+    With a Groq key the perspectives are arbitrated by the senior consultant
+    into a final executive report; without one, the merged local narrative is
+    produced deterministically.
     """
     perspectives = {
         "Consultant": local_report(target, findings, inventory, analyst),
         "Red Team": _red_team_text(findings, target),
         "Blue Team": _blue_team_text(findings, target),
+        "Skeptic": _skeptic_text(findings, target),
     }
     final_text: Optional[str] = None
     synthesized = False
@@ -488,7 +523,6 @@ def generate_council_report(target: str, findings: List[Dict[str, Any]],
             user_content = (
                 f"Target: {target}\nFindings: {findings}\nInventory: {inventory}\n"
                 + "\n--- PERSPECTIVE REPORTS ---\n"
-                + "\n\n--- PERSPECTIVE REPORTS ---\n"
                 + "\n\n".join(f"## {n}\n{t}" for n, t in perspectives.items())
                 + "\n\nArbitrate the final executive assessment."
             )

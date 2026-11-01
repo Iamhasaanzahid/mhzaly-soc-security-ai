@@ -32,6 +32,31 @@ instead of only the main assessment.
 - Three regression tests for `humanize()`: grammar-preserving word swaps,
   filler and heading noise removal, and idempotence.
 
+## [20.0.0] — 2026-11-01
+
+**Proof-Carrying SOC.** The platform now ships verifiable evidence instead of
+a good-looking report.
+
+### Added
+
+- `core/evidence.py` — append-only, hash-chained evidence ledger. Every
+  verified finding of a scan run is committed to a hash chain that commits to its
+  predecessor and to a canonical JSON payload; tampering is detectable in O(1).
+- Proof-pack export per scan run (`mhzaly_soc.db` ledger + `POST /api/v1/proof-pack`
+  style artifact via CLI `python -m core.scheduler export-evidence <run_id> <path>`).
+- `core/delta.py` — scan-to-scan change engine: new / resolved / persisting /
+  escalated / de-escalated findings with a human-voice narrative.
+- `core/posture.py` — explainable 0-100 posture score with per-factor drivers.
+- Human Council now includes a fourth perspective, the **Skeptic**, who challenges
+  confidence before budget is committed.
+- Findings in reports now carry an evidence fingerprint reference.
+- New Streamlit module: **🔐 Proof & Posture** (ledger verification, posture score,
+  change log).
+
+### Changed
+
+- Version bumped to 20.0.0 across `pyproject.toml`, UI and user agents.
+
 ## [19.0.0] — 2026-10-31
 
 Project maturity release. No behaviour change to scanning; this release makes the

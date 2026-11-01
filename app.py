@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MHZALY — AUTONOMOUS SOC & ATTACK-SURFACE INTELLIGENCE v19.0.1 - HARDENED SaaS EDITION
+MHZALY — AUTONOMOUS SOC & ATTACK-SURFACE INTELLIGENCE v20.0.0 - HARDENED SaaS EDITION
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Comprehensive Purple Team Operations Suite (Red Team Recon + Blue Team SOC Automation)
 Author: Muhammad Hassaan Zahid
@@ -44,6 +44,7 @@ except ImportError:
 from core import db
 from core import connectors as c
 from core import notifier
+from core import posture as posture_mod
 from core import scheduler
 from core import reporter
 
@@ -316,7 +317,7 @@ class BugBountyReconEngine:
                     report['dns'][rtype] = []
 
             session = requests.Session()
-            session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) PurpleTeamHunter/19.0'})
+            session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) PurpleTeamHunter/20.0'})
 
             t0 = time.time()
             resp = with_retry(session.get, target_url, timeout=8, verify=False, allow_redirects=True)
@@ -638,7 +639,7 @@ class NVDIntelligenceClient:
         seen_cves = set()
         try:
             params = {'keywordSearch': keyword, 'resultsPerPage': min(max_results, 30)}
-            headers = {'User-Agent': 'MHZALY-Purple-Team-Suite/19.0 (+authorized-security-tooling)'}
+            headers = {'User-Agent': 'MHZALY-Purple-Team-Suite/20.0 (+authorized-security-tooling)'}
             if self.nvd_key:
                 headers['apiKey'] = self.nvd_key
 
@@ -1535,6 +1536,7 @@ def main():
                 "⚡ Web HTTP Repeater & API Fuzzer",
                 "🤖 AI Triage Copilot",
                 "📊 Analytics & Reporting",
+                "🔐 Proof & Posture",
                 "Platform Configuration"
             ]
         )
@@ -1543,8 +1545,9 @@ def main():
             st.session_state.authenticated = False
             st.rerun()
         st.markdown("---")
-        st.caption("MHZALY v19.0.1 · Verified findings · Human-voice reports")
+        st.caption("MHZALY v20.0.0 · Verified findings · Human-voice reports")
         st.caption("Authorized use only — scan assets you own or have written permission to test.")
+        st.caption("v20 adds the proof-carrying layer: hash-chained evidence, posture scores, change logs.")
 
     if module == "Command Telemetry Center":
         st.markdown("# Purple Team Operations Center")
@@ -2555,6 +2558,33 @@ except Exception as e:
 
         else:
             st.info("No findings recorded yet — run a scan to start the analytics.")
+
+    elif module == "🔐 Proof & Posture":
+        st.markdown("# 🔐 Proof & Posture")
+        st.markdown("<p style='color: #9ca3af;'>Verifiable evidence chain, explainable posture score and the change narrative of the last assessment.</p>", unsafe_allow_html=True)
+
+        ev_status = db.verify_evidence()
+        if ev_status.get("ok"):
+            st.success(f"Evidence chain verified — {ev_status.get('records')} chained record(s) across the run history.")
+        else:
+            st.error(f"Evidence chain integrity broken at record {ev_status.get('broken_at')} — the ledger was modified after the fact.")
+
+        all_findings = db.recent_findings(limit=200)
+        posture = posture_mod.posture_score(all_findings)
+        col_a, col_b = st.columns(2)
+        col_a.metric("Posture Score", f"{posture.get('score')}/100", delta=None)
+        col_b.metric("Grade", posture.get("grade"))
+        for drv in posture.get("drivers") or []:
+            st.markdown(f"- `{drv.get('factor')}` — {drv.get('finding')} (weight {drv.get('weight')})")
+        if not all_findings:
+            st.info("No verified findings yet — the posture score is provisional until the first scan completes.")
+
+        st.markdown("### Last Change Log")
+        delta_row = db.get_latest_delta()
+        if delta_row:
+            st.write(f"Latest recorded change: `{delta_row.get('change_type')}` on `{delta_row.get('target')}` (run `{delta_row.get('run_id')}`)")
+        else:
+            st.info("No scan deltas recorded yet.")
 
     elif module == "Platform Configuration":
         st.markdown("# Platform Telemetry & API Status")
