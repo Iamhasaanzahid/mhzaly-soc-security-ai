@@ -1831,38 +1831,41 @@ def main():
                     report_text = reporter.humanize(polished or local_report)
                     report_source = "Local analyst engine + LLM polish" if polished else "Local analyst engine (no LLM key configured)"
 
-                    # Human Council: consultant + red team + blue team arbitration.
+                    # Assemble the full verified finding set for the engineer write-up.
+                    engine_findings: List[Dict[str, Any]] = []
+                    for e in recon.get("exposed_files") or []:
+                        if e.get("verified_leak"):
+                            engine_findings.append({
+                                "kind": "verified_leak", "category": "Recon",
+                                "severity": "HIGH", "summary": f"Verified exposure: {e.get('path', 'unknown')}",
+                                "confidence": 90, "verified": True, "details": e,
+                            })
+                    for h, val in (infra.get("headers") or {}).items():
+                        if val == "MISSING":
+                            engine_findings.append({
+                                "kind": "weak_headers", "category": "Security Headers",
+                                "severity": "MEDIUM", "summary": f"Missing security header: {h}",
+                                "confidence": 85, "verified": True, "details": {"missing": [h]},
+                            })
+                    for p in (infra.get("ports") or []):
+                        if p.get("port") in RISKY_PUBLIC_PORTS:
+                            engine_findings.append({
+                                "kind": "risky_open_port", "category": "Exposure Surface",
+                                "severity": "HIGH", "summary": f"Risky open port: {p.get('port')}/{p.get('service')}",
+                                "confidence": 80, "verified": True, "details": p,
+                            })
+
                     council = reporter.generate_council_report(
                         clean_target,
-                        [
-                            {
-                                "kind": "verified_leak" if e.get("verified_leak") else "weak_headers",
-                                "category": "Recon",
-                                "severity": "HIGH" if e.get("verified_leak") else "MEDIUM",
-                                "summary": f"Verified exposure: {e.get('path', 'unknown')}",
-                                "confidence": 90 if e.get("verified_leak") else 80,
-                                "verified": bool(e.get("verified_leak")),
-                                "details": e,
-                            }
-                            for e in recon.get("exposed_files", []) or []
-                            if e.get("verified_leak")
-                        ] or [
-                            {
-                                "kind": "weak_headers",
-                                "category": "Security Headers",
-                                "severity": "MEDIUM",
-                                "summary": f"Header grade {infra.get('headers', {}).get('grade', '?')}",
-                                "confidence": 80,
-                                "verified": True,
-                                "details": infra.get("headers", {}),
-                            }
-                        ],
+                        engine_findings,
                         {**recon, **infra},
                         groq_key,
                     )
+                    report_text = reporter.humanize(polished or local_report)
+                    report_source = "Local analyst engine + LLM polish" if polished else "Local analyst engine (no LLM key configured)"
                     if council.get("synthesized"):
                         report_text = reporter.humanize(council["report"])
-                        report_source = "Human Council — AI arbitration (consultant + red team + blue team)"
+                        report_source = "Human Council — AI arbitration (consultant + red team + blue team + skeptic)"
 
                     save_ai_security_engineer_scan(clean_target, risk, open_ports_count, exposed_count,
                                                    len(cve_res), st.session_state.user)
@@ -1886,7 +1889,8 @@ def main():
                     sec_grade = compute_security_grade(risk['score'])
                     lat_ms = recon.get('latency_ms', 145.0)
                     m1, m2, m3, m4, m5, m6 = st.columns(6)
-                    m1.metric("Aggregate Risk", f"{risk['score']}/100", risk['band'])
+                    m1.metric("Aggregate Risk", f"{risk['score']}/100")
+                    st.caption(f"Risk band: {risk.get('band', 'UNKNOWN')}")
                     m2.metric("Security Grade", sec_grade)
                     m3.metric("Response Latency", f"{lat_ms} ms")
                     m4.metric("Open Ports", open_ports_count)
@@ -1936,6 +1940,47 @@ def main():
                     st.markdown("### Analyst Write-Up")
                     st.caption(f"Source: {report_source}")
                     st.markdown(report_text)
+
+                    st.markdown("### 🔐 Evidence-Backed Client Report")
+                    ev_status_iah = db.verify_evidence()
+                    st.caption(
+                        f"Evidence chain: {'verified' if ev_status_iah.get('ok') else 'BROKEN'} · "
+                        f"Posture: {posture_mod.posture_score(engine_findings).get('score')}/100"
+                    )
+                    client_doc = _compose_client_report(
+                        clean_target,
+                        engine_findings,
+                        posture_mod.posture_score(engine_findings),
+                        db.get_latest_delta(clean_target),
+                        ev_status_iah,
+                        report_text,
+                        "the client's engineering team",
+                        "MHZALY Security Engineering",
+                    )
+                    ai_dl1, ai_dl2 = st.columns(2)
+                    with ai_dl1:
+                        st.download_button(
+                            "⬇️ Download Client Report (.md)",
+                            client_doc.encode("utf-8"),
+                            file_name=f"mhzaly-client-report-{clean_target.replace('.', '-')}.md",
+                            mime="text/markdown",
+                            use_container_width=True,
+                        )
+                    with ai_dl2:
+                        ai_pdf = _pdf_from_markdown(
+                            client_doc, f"Security Assessment — {clean_target}",
+                            f"MHZALY Security Engineering · {clean_target}",
+                        )
+                        if ai_pdf:
+                            st.download_button(
+                                "⬇️ Download Client Report (.pdf)",
+                                ai_pdf,
+                                file_name=f"mhzaly-client-report-{clean_target.replace('.', '-')}.pdf",
+                                mime="application/pdf",
+                                use_container_width=True,
+                            )
+                        else:
+                            st.caption("PDF engine unavailable here — use the Markdown export.")
 
                     st.markdown("### 🛡️ Enterprise Governance & OWASP Mapping")
                     owasp_col1, owasp_col2 = st.columns(2)
@@ -2342,7 +2387,8 @@ except Exception as e:
                 default="—",
             )
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Posture", f"{studio_posture['score']}/100", studio_posture["grade"])
+            m1.metric("Posture Score", f"{studio_posture['score']}/100", delta=None)
+            st.caption(f"Posture grade: {studio_posture['grade']}")
             m2.metric("Verified findings", sum(1 for f in picked if f.get("verified")))
             m3.metric("Highest severity", top_severity)
             m4.metric("Evidence records", evidence_status.get("records", 0))
@@ -2416,7 +2462,7 @@ except Exception as e:
 
         if "messages" not in st.session_state:
             st.session_state.messages = [
-                {"role": "assistant", "content": "I'm ready. Give me a target, a finding or a sample of logs and I'll work through it with you. I keep to what the evidence shows and say so when something cannot be verified."}
+                {"role": "assistant", "content": "I'm the AI security engineer on call. Give me a target, a finding, a scan report or a log sample — I'll reason through it like a senior consultant: evidence first, plain language second, and honest about what I couldn't verify."}
             ]
 
         st.markdown("**Quick Prompt Suggestions:**")
@@ -2432,8 +2478,8 @@ except Exception as e:
             if st.button("✍️ Write Python PoC", use_container_width=True):
                 selected_quick_prompt = "Write a clean, robust Python Proof-of-Concept (PoC) script to verify missing security headers and endpoint disclosures."
         with chip4:
-            if st.button("📊 OWASP Risk Review", use_container_width=True):
-                selected_quick_prompt = "Provide an OWASP Top 10 risk breakdown and executive mitigation strategy for web application hardening."
+            if st.button("📊 Incident Triage", use_container_width=True):
+                selected_quick_prompt = "Walk me through an incident triage: how would you order the investigation, which logs would you pull first, and how would you confirm a real data exposure?"
 
         if st.button("🗑️ Clear Chat History", use_container_width=False):
             st.session_state.messages = [
@@ -2499,7 +2545,7 @@ except Exception as e:
 
             with st.chat_message("assistant"):
                 if not groq_key:
-                    response_text = "Error: Groq API Key is not configured in your Streamlit secrets or sidebar."
+                    response_text = "I can't run a proper assessment right now — no AI engine key is configured on this console. Add your Groq key from the sidebar's **🔑 Custom API Keys & Webhooks** panel and I'll take it from there."
                     st.markdown(response_text)
                 else:
                     with st.spinner("Analyzing via Groq AI..."):

@@ -290,6 +290,12 @@ def run_scan_cycle(target: str, target_id: int, cfg: dict):
         )
         new_count = 0
         alerted = 0
+        # Paging policy: MEDIUM findings stay in the console and the database;
+        # only material risk rings Discord/SIEM. Operators can lower the bar with
+        # "discord_min_severity": "MEDIUM" in config.
+        discord_min_rank = confidence.SEVERITY_RANK.get(
+            str(cfg.get("discord_min_severity") or "HIGH").upper(), 3
+        )
         for f in kept:
             fp = db.make_fingerprint(target, f["category"], f["marker"])
             details = dict(f.get("details") or {})
@@ -301,7 +307,8 @@ def run_scan_cycle(target: str, target_id: int, cfg: dict):
             )
             if is_new:
                 new_count += 1
-                if confidence.should_alert(f):
+                if (confidence.should_alert(f)
+                        and confidence.SEVERITY_RANK.get(str(f["severity"]).upper(), 0) >= discord_min_rank):
                     alerted += 1
                     alert_finding(cfg, target, f["category"], f["severity"],
                                   f["summary"], details)

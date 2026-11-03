@@ -20,10 +20,20 @@ factor exactly once.
 - `posture_score()` charged each finding twice (a flat 25-point penalty before
   the rubric weight). A single verified exposure now deducts its rubric weight
   exactly once, so the score is explainable and reproducible.
+- Dashboard `st.metric` calls no longer pass non-numeric "delta" values, and the
+  report studio exposes the posture grade alongside the score.
 - Changelog ordering is now strictly newest-first.
 
 ### Changed
 
+- Discord/SIEM paging now defaults to **HIGH and above**; MEDIUM findings still
+  land in the console and the database but no longer page a human. Override with
+  `"discord_min_severity": "MEDIUM"` in config.
+- AI Security Engineer now reports from the full verified finding set (exposures,
+  missing headers, risky ports) and offers the composed client report as
+  Markdown and PDF.
+- Chatbot greeting, quick prompts and offline-state copy rewritten in the
+  consultant voice.
 - Version bumped to 21.0.0 across `pyproject.toml`, the UI, and user agents.
 
 # Changelog
