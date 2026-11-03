@@ -8,8 +8,8 @@
 [![CodeQL](https://github.com/Iamhasaanzahid/mhzaly-soc-security-ai/actions/workflows/codeql.yml/badge.svg)](https://github.com/Iamhasaanzahid/mhzaly-soc-security-ai/actions/workflows/codeql.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-3776AB?logo=python&logoColor=white)](pyproject.toml)
 [![Streamlit](https://img.shields.io/badge/streamlit-1.28%2B-FF4B4B?logo=streamlit&logoColor=white)](https://streamlit.io)
-[![Tests](https://img.shields.io/badge/tests-25%20passing-brightgreen)](tests)
-[![Version](https://img.shields.io/badge/version-20.0.0-blueviolet)](CHANGELOG.md)
+[![Tests](https://img.shields.io/badge/tests-110%20passing-brightgreen)](tests)
+[![Version](https://img.shields.io/badge/version-21.0.0-blueviolet)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 </div>
@@ -46,9 +46,10 @@ remains is a short list an engineer can act on and a consultant can sign.
 | Area | What it does |
 |---|---|
 | **AI Security Engineer** | One target in, one verified assessment out: recon, technology fingerprinting, header audit, CPE-confirmed CVE matching, attack-surface map, analyst write-up |
+| **Client Report Studio** | Signed, proof-carrying client document from verified findings: posture, remediation order, delta, evidence-chain statement, Markdown/PDF export |
 | **Verified Web Surface** | Header grading, cookie-flag analysis, certificate validation, CORS, bounded same-origin crawl, robots/sitemap mining, SPF/DMARC, dangling-CNAME takeover checks |
 | **Precision Gate** | Scores every candidate 0–100, de-duplicates across runs, enforces a confidence floor (default 70) and severity floor (default MEDIUM) |
-| **Human Council Reports** | Three independent perspectives — consultant, red team, blue team — arbitrated into one executive assessment; deterministic local narrative when no LLM key is configured |
+| **Human Council Reports** | Four perspectives — consultant, red team, blue team and a skeptic who challenges the confidence — arbitrated into one executive assessment; deterministic local narrative when no LLM key is configured |
 | **Autonomous SOC** | Cron-driven monitoring every 30 minutes, fingerprint-level de-duplication, Discord alerting with 429 back-off, persistent state committed back to the repo |
 | **AI Triage Copilot** | Per-finding analyst brief: executive summary, candidate Sigma rule, MITRE ATT&CK mapping, containment playbook, remediation steps |
 | **Threat Intelligence** | VirusTotal, AbuseIPDB, NVD (CPE-confirmed matching), ZoomEye — all optional, degrading gracefully when a key is absent |
@@ -56,6 +57,21 @@ remains is a short list an engineer can act on and a consultant can sign.
 | **Forensics & IOC Vault** | Persisted hashes, indicators, case notes |
 | **Artefacts** | Hardening script, PoC verifier, WAF rules, branded PDF reports |
 | **HTTP Repeater** | Burp-style request crafting for arbitrary methods, headers and bodies |
+
+---
+
+## Five workspaces
+
+The console is deliberately small. Five workspaces cover the whole engagement,
+and every tool lives under one specific home.
+
+| Workspace | What lives there |
+|---|---|
+| **🎯 Scan & Verify** | Command telemetry, AI Security Engineer, autonomous SOC, red/blue agent pipeline |
+| **🛡️ Findings & Response** | Vulnerability and ticket manager, AI triage copilot, forensics and IOC vault, SIEM simulator, activity history |
+| **📄 AI Reports** | Client Report Studio, AI security chatbot |
+| **🧰 Arsenal** | Threat intel lookup, HTTP repeater and API fuzzer, Sigma generator, encoder and hasher |
+| **📊 Proof & Platform** | Analytics, proof and posture, platform configuration |
 
 ---
 
@@ -192,13 +208,17 @@ Repository secrets (Settings → Secrets and variables → Actions): `DISCORD_WE
 
 Reports are written by `core/reporter.py` in a consultant voice, not a scanner voice.
 
-- **With `GROQ_API_KEY`:** the Human Council assembles three perspectives — consultant (evidence-led),
-  red team (exploit-first), blue team (detection-first) — and arbitrates them into one executive
-  assessment.
+- **With `GROQ_API_KEY`:** the Human Council assembles four perspectives — consultant (evidence-led),
+  red team (exploit-first), blue team (detection-first) and skeptic (confidence-challenging) — and
+  arbitrates them into one executive assessment.
 - **Without a key:** a deterministic local narrative is produced from the same evidence. No network
   call, no placeholder text, no fabricated identifiers.
 - **Every report** passes through `humanize()`, which strips chatbot tells, and
   `check_hallucinations()`, which flags CVE IDs or IPs that do not appear in the evidence bundle.
+
+- **Client Report Studio:** wraps the narrative in a signed client document — findings at a glance,
+  remediation order, change since the previous assessment, and the evidence-chain status — with
+  Markdown and PDF export.
 
 ---
 

@@ -33,9 +33,8 @@ def posture_score(findings: List[Dict[str, Any]]) -> Dict[str, Any]:
     drivers: List[Dict[str, Any]] = []
     seen_kinds = set()
     for f in sorted(verified, key=lambda x: -float(x.get("confidence") or 0)):
-        weight = 25.0  # worst-case single finding cost
-        score -= weight
         kind = str(f.get("kind") or "")
+        weight = 25.0  # worst-case single finding cost when the kind is unmapped
         for entry in RUBRIC:
             if kind in entry["kinds"]:
                 weight = float(entry["weight"])

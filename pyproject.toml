@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mhzaly-soc-security-ai"
-version = "20.0.0"
-description = "MHZALY — autonomous SOC and attack-surface intelligence. Verifiable, proof-carrying findings, human-voice reports, purple-team operations in one dashboard."
+version = "21.0.0"
+description = "MHZALY — autonomous SOC and attack-surface intelligence. Five focused workspaces, proof-carrying findings, and client-ready human-voice reports."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MHZALY — AUTONOMOUS SOC & ATTACK-SURFACE INTELLIGENCE v20.0.0 - HARDENED SaaS EDITION
+MHZALY — AUTONOMOUS SOC & ATTACK-SURFACE INTELLIGENCE v21.0.0 - OPERATOR CONSOLE EDITION
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Comprehensive Purple Team Operations Suite (Red Team Recon + Blue Team SOC Automation)
 Author: Muhammad Hassaan Zahid
@@ -317,7 +317,7 @@ class BugBountyReconEngine:
                     report['dns'][rtype] = []
 
             session = requests.Session()
-            session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) PurpleTeamHunter/20.0'})
+            session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) PurpleTeamHunter/21.0'})
 
             t0 = time.time()
             resp = with_retry(session.get, target_url, timeout=8, verify=False, allow_redirects=True)
@@ -639,7 +639,7 @@ class NVDIntelligenceClient:
         seen_cves = set()
         try:
             params = {'keywordSearch': keyword, 'resultsPerPage': min(max_results, 30)}
-            headers = {'User-Agent': 'MHZALY-Purple-Team-Suite/20.0 (+authorized-security-tooling)'}
+            headers = {'User-Agent': 'MHZALY-Purple-Team-Suite/21.0 (+authorized-security-tooling)'}
             if self.nvd_key:
                 headers['apiKey'] = self.nvd_key
 
@@ -1376,6 +1376,168 @@ def render_autonomous_tab():
         st.info("No scan runs recorded yet.")
 
 
+def _report_finding_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Translate a database finding into the shape the report engine expects.
+
+    The database stores a category + fingerprint; the reporter reasons about a
+    finding kind and a marker. The details blob carries the kind when a scanner
+    supplied one, so we prefer it and fall back to the category.
+    """
+    details = row.get("details")
+    if isinstance(details, str):
+        try:
+            details = json.loads(details)
+        except (TypeError, ValueError):
+            details = {}
+    if not isinstance(details, dict):
+        details = {}
+    category = str(row.get("category") or "Observation")
+    return {
+        "kind": details.get("kind") or category.lower().replace(" ", "_"),
+        "category": category,
+        "marker": details.get("marker") or str(row.get("fingerprint") or "")[:16],
+        "summary": row.get("summary") or "",
+        "severity": str(row.get("severity") or "INFO").upper(),
+        "confidence": int(row.get("confidence") or 0),
+        "verified": bool(row.get("verified")),
+        "details": details,
+    }
+
+
+def _latin(text: str) -> str:
+    return str(text).encode("latin-1", "replace").decode("latin-1")
+
+
+def _pdf_from_markdown(report_text: str, title: str, subtitle: str = "") -> Optional[bytes]:
+    """Render the client report to a clean, printable PDF (Helvetica, latin-1)."""
+    if not FPDF_AVAILABLE:
+        return None
+    try:
+        pdf = FPDF()
+        pdf.set_auto_page_break(auto=True, margin=16)
+        pdf.add_page()
+        pdf.set_font("Helvetica", "B", 18)
+        pdf.multi_cell(0, 9, _latin(title))
+        if subtitle:
+            pdf.set_font("Helvetica", "", 9)
+            pdf.set_text_color(110, 110, 110)
+            pdf.multi_cell(0, 5, _latin(subtitle))
+            pdf.set_text_color(20, 20, 20)
+        pdf.ln(4)
+
+        for raw in report_text.splitlines():
+            line = raw.rstrip()
+            if not line:
+                pdf.ln(2)
+                continue
+            clean = _latin(line.replace("**", "").replace("`", ""))
+            if line.startswith("# "):
+                pdf.ln(2)
+                pdf.set_font("Helvetica", "B", 15)
+                pdf.multi_cell(0, 7, _latin(line[2:]))
+                pdf.set_font("Helvetica", "", 10)
+            elif line.startswith("## "):
+                pdf.ln(2)
+                pdf.set_font("Helvetica", "B", 12)
+                pdf.multi_cell(0, 6, _latin(line[3:]))
+                pdf.set_font("Helvetica", "", 10)
+            elif line.startswith("### "):
+                pdf.ln(1)
+                pdf.set_font("Helvetica", "B", 10.5)
+                pdf.multi_cell(0, 6, _latin(line[4:]))
+                pdf.set_font("Helvetica", "", 10)
+            elif line.startswith(("- ", "* ")):
+                pdf.multi_cell(0, 5, _latin("• " + line[2:]))
+            elif line.strip() in {"---", "***"}:
+                pdf.ln(1)
+            else:
+                pdf.multi_cell(0, 5, clean)
+
+        out = pdf.output(dest="S")
+        if isinstance(out, str):
+            out = out.encode("latin-1", "replace")
+        return bytes(out)
+    except Exception as exc:  # pragma: no cover — export must never kill the page
+        logger.error(f"Client report PDF export failed: {exc}")
+        return None
+
+
+def _compose_client_report(target: str, findings: List[Dict[str, Any]],
+                           posture: Dict[str, Any], delta_row: Optional[Dict[str, Any]],
+                           evidence_status: Dict[str, Any], body: str,
+                           audience: str, analyst: str) -> str:
+    """Wrap the analyst narrative in a signed, proof-carrying client document."""
+    date_str = datetime.now().strftime("%d %B %Y")
+    severity_order = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
+    ranked = sorted(findings, key=lambda f: (severity_order.index(f.get("severity", "INFO"))
+                                             if f.get("severity") in severity_order else 5,
+                                             -int(f.get("confidence") or 0)))
+    counts = {sev: sum(1 for f in findings if f.get("severity") == sev) for sev in severity_order}
+    chain = "verified" if evidence_status.get("ok") else f"broken at record {evidence_status.get('broken_at')}"
+
+    lines = [
+        f"# Security Assessment — {target}",
+        "",
+        f"**Prepared for** {audience}  ",
+        f"**Prepared by** {analyst}  ",
+        f"**Date** {date_str}  ",
+        f"**Evidence chain** {chain} · {evidence_status.get('records', 0)} ledger record(s)  ",
+        f"**Posture** {posture.get('score', '—')}/100 (grade {posture.get('grade', '—')})",
+        "",
+        "---",
+        "",
+        "## Findings at a glance",
+        "",
+        "| Severity | Count |",
+        "|---|---:|",
+    ]
+    for sev in severity_order:
+        if counts[sev]:
+            lines.append(f"| {sev.title()} | {counts[sev]} |")
+    if not findings:
+        lines.append("| No verified findings | 0 |")
+    lines.append("")
+    lines.append(body.rstrip())
+    lines.append("")
+    lines.append("## Remediation order")
+    lines.append("")
+    if ranked:
+        for idx, f in enumerate(ranked[:10], 1):
+            fix = reporter._fix_short(f) if hasattr(reporter, "_fix_short") else ""
+            lines.append(f"{idx}. **{f.get('severity', 'INFO').title()}** — {f.get('summary', '')}"
+                         + (f"  \n   {fix}" if fix else ""))
+    else:
+        lines.append("No verified findings to remediate. Keep the monitoring cadence and re-test after any change.")
+    lines.append("")
+    lines.append("## Change since the previous assessment")
+    lines.append("")
+    if delta_row:
+        change = str(delta_row.get("change_type") or "").replace("_", " ").title()
+        lines.append(f"The last recorded change was **{change}** on `{delta_row.get('target', target)}` "
+                     f"(scan run {delta_row.get('run_id', 'unknown')}).")
+    else:
+        lines.append("This is the first recorded assessment for this target, so there is no delta yet. "
+                     "The next run will establish the baseline comparison.")
+    lines.append("")
+    lines.append("## How this was verified")
+    lines.append("")
+    lines.append(
+        "Every finding in this document was scored, de-duplicated and gated before it reached the report. "
+        "Subdomains are treated as inventory, not findings. A finding is only marked verified when the "
+        "evidence supports it; everything else is explicitly left out rather than guessed at."
+    )
+    lines.append("")
+    lines.append(
+        f"The evidence ledger for this assessment is {chain}. Each record commits to the hash of the "
+        "record before it, so changing a past finding invalidates the chain and is detectable."
+    )
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    lines.append(f"*{analyst} · report generated {date_str} · MHZALY proof-carrying SOC*")
+    return "\n".join(lines)
+
+
 def main():
     st.set_page_config(
         page_title="MHZALY Purple Team Operations Suite",
@@ -1518,36 +1680,62 @@ def main():
                 st.session_state["custom_nvd_key"] = custom_nvd
             if custom_webhook:
                 st.session_state["custom_discord_webhook"] = custom_webhook
-        module = st.radio(
-            "Purple Team Hub Menu",
-            [
+        st.markdown(
+            "<div style='padding:14px 16px;border:1px solid #1f2937;border-radius:14px;"
+            "background:linear-gradient(135deg,#0b1220,#111827);margin-bottom:12px;'>"
+            "<div style='font-size:11px;letter-spacing:.18em;color:#60a5fa;text-transform:uppercase;'>MHZALY</div>"
+            "<div style='font-size:20px;font-weight:700;color:#f9fafb;line-height:1.2;'>Security Operations</div>"
+            "<div style='font-size:11px;color:#9ca3af;margin-top:4px;'>Proof-carrying console · v21.0.0</div>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
+        # Five workspaces. Every capability lives inside one of them; the
+        # operator never has to scan a 17-item menu again.
+        NAV_SECTIONS = {
+            "🎯 1 · Scan & Verify": [
                 "Command Telemetry Center",
                 "AI Security Engineer",
                 "Autonomous SOC (Live DB)",
                 "Autonomous AI-Agent Red/Blue Pipeline",
-                "AI Security Chatbot",
-                "Blue Team SOC Log & SIEM Simulator",
-                "Automated Sigma Rule Generator",
-                "Offensive Encoder & Hasher",
-                "Activity History & Logs",
+            ],
+            "🛡️ 2 · Findings & Response": [
                 "🎯 Live Vulnerability & Ticket Manager",
+                "🤖 AI Triage Copilot",
                 "🔬 Digital Forensics & IOC Vault",
+                "Blue Team SOC Log & SIEM Simulator",
+                "Activity History & Logs",
+            ],
+            "📄 3 · AI Reports": [
+                "📄 Client Report Studio",
+                "AI Security Chatbot",
+            ],
+            "🧰 4 · Arsenal": [
                 "🌐 On-Demand Threat Intel & IOC Lookup",
                 "⚡ Web HTTP Repeater & API Fuzzer",
-                "🤖 AI Triage Copilot",
+                "Automated Sigma Rule Generator",
+                "Offensive Encoder & Hasher",
+            ],
+            "📊 5 · Proof & Platform": [
                 "📊 Analytics & Reporting",
                 "🔐 Proof & Posture",
-                "Platform Configuration"
-            ]
+                "Platform Configuration",
+            ],
+        }
+        section = st.radio("Workspace", list(NAV_SECTIONS), key="nav_section")
+        section_tools = NAV_SECTIONS[section]
+        module = (
+            section_tools[0]
+            if len(section_tools) == 1
+            else st.selectbox("Module", section_tools, key=f"nav_tool::{section}")
         )
         st.markdown("---")
         if st.button("Terminate Session", use_container_width=True):
             st.session_state.authenticated = False
             st.rerun()
         st.markdown("---")
-        st.caption("MHZALY v20.0.0 · Verified findings · Human-voice reports")
+        st.caption("MHZALY v21.0.0 · Five workspaces · Human-voice reports")
         st.caption("Authorized use only — scan assets you own or have written permission to test.")
-        st.caption("v20 adds the proof-carrying layer: hash-chained evidence, posture scores, change logs.")
 
     if module == "Command Telemetry Center":
         st.markdown("# Purple Team Operations Center")
@@ -2108,6 +2296,119 @@ except Exception as e:
 
         elif not authorized:
             st.caption("Check the authorization box above to enable scanning.")
+
+    elif module == "📄 Client Report Studio":
+        st.markdown("# 📄 Client Report Studio")
+        st.markdown(
+            "<p style='color: #9ca3af;'>One document, written the way a senior consultant would write it: "
+            "evidence first, plain language, no filler, and a clear remediation order the client can act on.</p>",
+            unsafe_allow_html=True,
+        )
+
+        finding_rows = db.recent_findings(limit=500)
+        available_targets = sorted({str(r.get("target")) for r in finding_rows if r.get("target")})
+
+        if not available_targets:
+            st.info(
+                "The studio only writes from evidence it can defend, and the database has no verified findings yet. "
+                "Run a scan from **Scan & Verify**, then return here."
+            )
+        else:
+            evidence_status = db.verify_evidence()
+            c1, c2, c3 = st.columns([1.2, 1.8, 0.8])
+            with c1:
+                studio_target = st.selectbox("Target", available_targets, key="studio_target")
+            with c2:
+                studio_audience = st.text_input(
+                    "Written for", value="the client's engineering team", key="studio_audience"
+                )
+            with c3:
+                st.metric("Evidence", "Verified" if evidence_status.get("ok") else "Broken")
+
+            studio_analyst = st.text_input(
+                "Prepared by", value="MHZALY Security Engineering", key="studio_analyst"
+            )
+
+            picked = [
+                _report_finding_from_row(r)
+                for r in finding_rows
+                if str(r.get("target")) == studio_target
+            ]
+            studio_posture = posture_mod.posture_score(picked)
+            sev_rank = ["INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"]
+            top_severity = max(
+                (f.get("severity", "INFO") for f in picked),
+                key=lambda s: sev_rank.index(s) if s in sev_rank else 0,
+                default="—",
+            )
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Posture", f"{studio_posture['score']}/100", studio_posture["grade"])
+            m2.metric("Verified findings", sum(1 for f in picked if f.get("verified")))
+            m3.metric("Highest severity", top_severity)
+            m4.metric("Evidence records", evidence_status.get("records", 0))
+
+            if st.button("✍️ Generate client report", type="primary", use_container_width=True):
+                inventory = {
+                    "origin": f"https://{studio_target}",
+                    "pages": [f"https://{studio_target}"],
+                    "technologies": [],
+                }
+                with st.spinner("Writing the assessment — evidence first, narrative second..."):
+                    generated = reporter.generate_report(
+                        studio_target,
+                        picked,
+                        inventory,
+                        groq_key=groq_key,
+                        audience=studio_audience,
+                        analyst=studio_analyst,
+                    )
+                    composed = _compose_client_report(
+                        studio_target,
+                        picked,
+                        studio_posture,
+                        db.get_latest_delta(studio_target),
+                        evidence_status,
+                        generated["text"],
+                        studio_audience,
+                        studio_analyst,
+                    )
+                st.session_state["studio_report"] = composed
+                st.session_state["studio_source"] = generated.get("source", "local analyst narrative")
+                st.session_state["studio_target_name"] = studio_target
+                st.session_state["studio_warnings"] = generated.get("warnings") or []
+
+            if st.session_state.get("studio_report"):
+                st.markdown("---")
+                st.caption(f"Source: {st.session_state.get('studio_source', 'local analyst narrative')}")
+                for warning in st.session_state.get("studio_warnings") or []:
+                    st.warning(warning)
+                with st.container():
+                    st.markdown(st.session_state["studio_report"])
+
+                safe_name = str(st.session_state.get("studio_target_name", "target")).replace(".", "-")
+                d1, d2 = st.columns(2)
+                d1.download_button(
+                    "⬇️ Download Markdown",
+                    st.session_state["studio_report"].encode("utf-8"),
+                    file_name=f"mhzaly-assessment-{safe_name}.md",
+                    mime="text/markdown",
+                    use_container_width=True,
+                )
+                pdf_bytes = _pdf_from_markdown(
+                    st.session_state["studio_report"],
+                    f"Security Assessment — {st.session_state.get('studio_target_name', '')}",
+                    f"{studio_analyst} · {studio_audience}",
+                )
+                if pdf_bytes:
+                    d2.download_button(
+                        "⬇️ Download PDF",
+                        pdf_bytes,
+                        file_name=f"mhzaly-assessment-{safe_name}.pdf",
+                        mime="application/pdf",
+                        use_container_width=True,
+                    )
+                else:
+                    d2.caption("PDF engine unavailable here — Markdown export still works.")
 
     elif module == "AI Security Chatbot":
         st.markdown("# 🧠 MHZALY Advanced Cyber Intelligence Assistant")

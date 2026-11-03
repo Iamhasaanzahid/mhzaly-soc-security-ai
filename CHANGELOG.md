@@ -1,7 +1,60 @@
+## [21.0.0] — 2026-11-02
+
+**Operator Console.** The platform now has five workspaces, a report studio that
+writes like a senior consultant, and a posture score that charges each risk
+factor exactly once.
+
+### Added
+
+- **Five workspaces** — Scan & Verify, Findings & Response, AI Reports, Arsenal,
+  Proof & Platform. Every capability is grouped under a specific home instead of
+  a 17-item menu.
+- **Client Report Studio** — a signed, proof-carrying client document built from
+  verified findings only: findings-at-a-glance table, analyst narrative,
+  remediation order, change-since-last-assessment, evidence-chain statement,
+  Markdown and PDF export.
+- Deterministic Markdown-to-PDF renderer for client reports.
+
+### Fixed
+
+- `posture_score()` charged each finding twice (a flat 25-point penalty before
+  the rubric weight). A single verified exposure now deducts its rubric weight
+  exactly once, so the score is explainable and reproducible.
+- Changelog ordering is now strictly newest-first.
+
+### Changed
+
+- Version bumped to 21.0.0 across `pyproject.toml`, the UI, and user agents.
+
 # Changelog
 
 All notable changes to this project are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · [SemVer](https://semver.org/).
+
+## [20.0.0] — 2026-11-01
+
+**Proof-Carrying SOC.** The platform now ships verifiable evidence instead of
+a good-looking report.
+
+### Added
+
+- `core/evidence.py` — append-only, hash-chained evidence ledger. Every
+  verified finding of a scan run is committed to a hash chain that commits to its
+  predecessor and to a canonical JSON payload; tampering is detectable in O(1).
+- Proof-pack export per scan run (`mhzaly_soc.db` ledger + `POST /api/v1/proof-pack`
+  style artifact via CLI `python -m core.scheduler export-evidence <run_id> <path>`).
+- `core/delta.py` — scan-to-scan change engine: new / resolved / persisting /
+  escalated / de-escalated findings with a human-voice narrative.
+- `core/posture.py` — explainable 0-100 posture score with per-factor drivers.
+- Human Council now includes a fourth perspective, the **Skeptic**, who challenges
+  confidence before budget is committed.
+- Findings in reports now carry an evidence fingerprint reference.
+- New Streamlit module: **🔐 Proof & Posture** (ledger verification, posture score,
+  change log).
+
+### Changed
+
+- Version bumped to 20.0.0 across `pyproject.toml`, UI and user agents.
 
 ## [19.0.1] — 2026-10-31
 
@@ -31,31 +84,6 @@ instead of only the main assessment.
 
 - Three regression tests for `humanize()`: grammar-preserving word swaps,
   filler and heading noise removal, and idempotence.
-
-## [20.0.0] — 2026-11-01
-
-**Proof-Carrying SOC.** The platform now ships verifiable evidence instead of
-a good-looking report.
-
-### Added
-
-- `core/evidence.py` — append-only, hash-chained evidence ledger. Every
-  verified finding of a scan run is committed to a hash chain that commits to its
-  predecessor and to a canonical JSON payload; tampering is detectable in O(1).
-- Proof-pack export per scan run (`mhzaly_soc.db` ledger + `POST /api/v1/proof-pack`
-  style artifact via CLI `python -m core.scheduler export-evidence <run_id> <path>`).
-- `core/delta.py` — scan-to-scan change engine: new / resolved / persisting /
-  escalated / de-escalated findings with a human-voice narrative.
-- `core/posture.py` — explainable 0-100 posture score with per-factor drivers.
-- Human Council now includes a fourth perspective, the **Skeptic**, who challenges
-  confidence before budget is committed.
-- Findings in reports now carry an evidence fingerprint reference.
-- New Streamlit module: **🔐 Proof & Posture** (ledger verification, posture score,
-  change log).
-
-### Changed
-
-- Version bumped to 20.0.0 across `pyproject.toml`, UI and user agents.
 
 ## [19.0.0] — 2026-10-31
 

@@ -1,0 +1,11 @@
+[build]
+  command = ""
+  publish = "docs"
+
+[context.production]
+  publish = "docs"
+
+[[redirects]]
+  from = "/landing"
+  to = "/"
+  status = 301
