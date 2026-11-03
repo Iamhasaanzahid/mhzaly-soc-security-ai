@@ -1,3 +1,24 @@
+## [21.1.0] — 2026-11-03
+
+**Nothing hidden.** Every module is back in the main menu, and the console can no
+longer be taken down by a database import.
+
+### Fixed
+
+- `core.db` no longer opens SQLite at import time. The evidence ledger is created
+  lazily on first use, so a read-only mount can no longer crash the whole app
+  before the first page renders (this is what made the DB and the AI Security
+  Engineer appear to disappear on Streamlit Cloud).
+- `db.init_db()` now runs once at startup instead of only when the autonomous
+  page happens to be opened, so findings, proof and report pages always have
+  their schema.
+
+### Changed
+
+- All capabilities are listed in the sidebar again: the fifteen original modules
+  plus Client Report Studio and Proof & Posture. No module is buried.
+- Version bumped to 21.1.0.
+
 ## [21.0.0] — 2026-11-02
 
 **Operator Console.** The platform now has five workspaces, a report studio that

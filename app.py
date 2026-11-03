@@ -1647,6 +1647,11 @@ def main():
                         st.error("Authentication failed: Invalid credentials.")
         return
 
+    try:
+        db.init_db()
+    except Exception as _db_exc:  # keep the console alive; pages surface the error clearly
+        st.session_state["db_init_error"] = str(_db_exc)
+
     session_timeout_minutes = int(st.secrets.get("SESSION_TIMEOUT_MINUTES", DEFAULT_SESSION_TIMEOUT_MINUTES))
     if not enforce_session_timeout(session_timeout_minutes):
         return
@@ -1690,51 +1695,36 @@ def main():
             unsafe_allow_html=True,
         )
 
-        # Five workspaces. Every capability lives inside one of them; the
-        # operator never has to scan a 17-item menu again.
-        NAV_SECTIONS = {
-            "🎯 1 · Scan & Verify": [
+        # Every capability, exactly where operators expect it.
+        module = st.radio(
+            "Purple Team Hub Menu",
+            [
                 "Command Telemetry Center",
                 "AI Security Engineer",
                 "Autonomous SOC (Live DB)",
                 "Autonomous AI-Agent Red/Blue Pipeline",
-            ],
-            "🛡️ 2 · Findings & Response": [
-                "🎯 Live Vulnerability & Ticket Manager",
-                "🤖 AI Triage Copilot",
-                "🔬 Digital Forensics & IOC Vault",
-                "Blue Team SOC Log & SIEM Simulator",
-                "Activity History & Logs",
-            ],
-            "📄 3 · AI Reports": [
-                "📄 Client Report Studio",
                 "AI Security Chatbot",
-            ],
-            "🧰 4 · Arsenal": [
-                "🌐 On-Demand Threat Intel & IOC Lookup",
-                "⚡ Web HTTP Repeater & API Fuzzer",
+                "📄 Client Report Studio",
+                "Blue Team SOC Log & SIEM Simulator",
                 "Automated Sigma Rule Generator",
                 "Offensive Encoder & Hasher",
-            ],
-            "📊 5 · Proof & Platform": [
+                "Activity History & Logs",
+                "🎯 Live Vulnerability & Ticket Manager",
+                "🔬 Digital Forensics & IOC Vault",
+                "🌐 On-Demand Threat Intel & IOC Lookup",
+                "⚡ Web HTTP Repeater & API Fuzzer",
+                "🤖 AI Triage Copilot",
                 "📊 Analytics & Reporting",
                 "🔐 Proof & Posture",
                 "Platform Configuration",
             ],
-        }
-        section = st.radio("Workspace", list(NAV_SECTIONS), key="nav_section")
-        section_tools = NAV_SECTIONS[section]
-        module = (
-            section_tools[0]
-            if len(section_tools) == 1
-            else st.selectbox("Module", section_tools, key=f"nav_tool::{section}")
         )
         st.markdown("---")
         if st.button("Terminate Session", use_container_width=True):
             st.session_state.authenticated = False
             st.rerun()
         st.markdown("---")
-        st.caption("MHZALY v21.0.0 · Five workspaces · Human-voice reports")
+        st.caption("MHZALY v21.1.0 · All modules · Human-voice reports")
         st.caption("Authorized use only — scan assets you own or have written permission to test.")
 
     if module == "Command Telemetry Center":

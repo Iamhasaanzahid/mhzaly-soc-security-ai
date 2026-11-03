@@ -14,7 +14,15 @@ from .evidence import EvidenceLedger
 
 DB_PATH = "mhzaly_soc.db"
 
-LEDGER = EvidenceLedger(DB_PATH)
+
+def _ledger() -> EvidenceLedger:
+    """Create the evidence ledger lazily.
+
+    Importing core.db must never open SQLite: on Streamlit Cloud the checkout can
+    be read-only at import time, and opening the database there used to take the
+    whole console down before a single page rendered.
+    """
+    return EvidenceLedger(DB_PATH)
 
 
 def get_connection():
@@ -323,15 +331,15 @@ def get_forensics_artifacts(limit: int = 50) -> List[Dict[str, Any]]:
 
 def record_evidence(run_id, target: str, findings: List[Dict[str, Any]]) -> str:
     """Append one scan run's verified findings to the hash-chained ledger."""
-    return LEDGER.record_run(str(run_id), target, findings)
+    return _ledger().record_run(str(run_id), target, findings)
 
 
 def verify_evidence() -> Dict[str, Any]:
-    return LEDGER.verify()
+    return _ledger().verify()
 
 
 def export_proof_pack(run_id: str, path: str) -> Dict[str, Any]:
-    return LEDGER.export_proof_pack(run_id, path)
+    return _ledger().export_proof_pack(run_id, path)
 
 
 # ── Findings for a target (used by the delta engine) ─────────────────────────
