@@ -1,3 +1,24 @@
+## [21.2.0] — 2026-11-06
+
+**Proof & Posture command centre.** The proof layer is now something an auditor can
+read at a glance.
+
+### Added
+
+- Posture history: every autonomous scan stores its score, grade and verified
+  count, and the console charts the trend over time.
+- Change analytics: 30-day new / resolved / escalated / de-escalated / persisting
+  counters as a chart, plus a searchable event log.
+- Score drivers table: each factor, the finding behind it, its rubric weight and
+  the confidence that produced it.
+- One-click proof-pack download (JSON) for the latest evidence-chain run.
+- `db.record_posture()`, `db.posture_history()`, `db.recent_deltas()`,
+  `db.delta_counters()` and `db.latest_evidence_run()`.
+
+### Changed
+
+- Version bumped to 21.2.0.
+
 ## [21.1.0] — 2026-11-03
 
 **Nothing hidden.** Every module is back in the main menu, and the console can no

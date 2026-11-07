@@ -129,6 +129,20 @@ def init_db():
         )
     """)
 
+    # Posture score history — one row per scan run, so the console can show a
+    # trend instead of a single snapshot.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS posture_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            target TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            score INTEGER NOT NULL,
+            grade TEXT NOT NULL,
+            verified_count INTEGER NOT NULL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -399,3 +413,65 @@ def get_latest_delta(target: str) -> Optional[Dict[str, Any]]:
     if not row:
         return None
     return dict(row)
+
+
+# ── Position history & delta analytics (Proof & Posture console) ────────────
+
+def record_posture(run_id, target: str, posture: Dict[str, Any]) -> bool:
+    """Persist one scan run's posture so the console can chart a trend."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            """INSERT INTO posture_history
+               (target, run_id, score, grade, verified_count)
+               VALUES (?, ?, ?, ?, ?)""",
+            (target, str(run_id), int(posture.get("score") or 0),
+             str(posture.get("grade") or "?"), int(posture.get("verified_count") or 0)),
+        )
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+def posture_history(limit: int = 120) -> List[Dict[str, Any]]:
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM posture_history ORDER BY id DESC LIMIT ?", (int(limit),)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def recent_deltas(limit: int = 100) -> List[Dict[str, Any]]:
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM scan_deltas ORDER BY id DESC LIMIT ?", (int(limit),)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def delta_counters(days: int = 30) -> Dict[str, int]:
+    """Count each change type over the recent window."""
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT change_type, COUNT(*) AS n FROM scan_deltas "
+        "WHERE created_at >= datetime('now', ?) GROUP BY change_type",
+        (f"-{int(days)} days",),
+    ).fetchall()
+    conn.close()
+    return {str(r["change_type"]): int(r["n"]) for r in rows}
+
+
+def latest_evidence_run() -> Optional[str]:
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT run_id FROM evidence_ledger ORDER BY seq DESC LIMIT 1"
+        ).fetchone()
+    except Exception:
+        row = None
+    finally:
+        conn.close()
+    return str(row["run_id"]) if row else None

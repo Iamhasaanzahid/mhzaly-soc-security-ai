@@ -1724,7 +1724,7 @@ def main():
             st.session_state.authenticated = False
             st.rerun()
         st.markdown("---")
-        st.caption("MHZALY v21.1.0 · All modules · Human-voice reports")
+        st.caption("MHZALY v21.2.0 · All modules · Proof & posture")
         st.caption("Authorized use only — scan assets you own or have written permission to test.")
 
     if module == "Command Telemetry Center":
@@ -2898,30 +2898,84 @@ except Exception as e:
 
     elif module == "🔐 Proof & Posture":
         st.markdown("# 🔐 Proof & Posture")
-        st.markdown("<p style='color: #9ca3af;'>Verifiable evidence chain, explainable posture score and the change narrative of the last assessment.</p>", unsafe_allow_html=True)
+        st.markdown(
+            "<p style='color: #9ca3af;'>The verifiable layer: hash-chained evidence, an explainable "
+            "posture score, and the change history that shows whether the estate is getting better or worse.</p>",
+            unsafe_allow_html=True,
+        )
 
         ev_status = db.verify_evidence()
+        all_findings = db.recent_findings(limit=500)
+        current_posture = posture_mod.posture_score(all_findings)
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Posture Score", f"{current_posture['score']}/100")
+        c2.metric("Grade", current_posture["grade"])
+        c3.metric("Verified findings", sum(1 for f in all_findings if f.get("verified")))
+        c4.metric("Evidence records", ev_status.get("records", 0))
+
         if ev_status.get("ok"):
-            st.success(f"Evidence chain verified — {ev_status.get('records')} chained record(s) across the run history.")
+            head = str(ev_status.get("head") or "genesis")
+            st.success(f"Evidence chain verified — head `{head[:16]}…` · {ev_status.get('records', 0)} record(s).")
         else:
-            st.error(f"Evidence chain integrity broken at record {ev_status.get('broken_at')} — the ledger was modified after the fact.")
+            st.error(
+                f"Evidence chain integrity broken at record {ev_status.get('broken_at')} — "
+                "the ledger was modified after the fact."
+            )
 
-        all_findings = db.recent_findings(limit=200)
-        posture = posture_mod.posture_score(all_findings)
-        col_a, col_b = st.columns(2)
-        col_a.metric("Posture Score", f"{posture.get('score')}/100", delta=None)
-        col_b.metric("Grade", posture.get("grade"))
-        for drv in posture.get("drivers") or []:
-            st.markdown(f"- `{drv.get('factor')}` — {drv.get('finding')} (weight {drv.get('weight')})")
-        if not all_findings:
-            st.info("No verified findings yet — the posture score is provisional until the first scan completes.")
-
-        st.markdown("### Last Change Log")
-        delta_row = db.get_latest_delta()
-        if delta_row:
-            st.write(f"Latest recorded change: `{delta_row.get('change_type')}` on `{delta_row.get('target')}` (run `{delta_row.get('run_id')}`)")
+        st.markdown("### Change activity (last 30 days)")
+        counters = db.delta_counters(days=30)
+        if counters:
+            labels = ["NEW", "RESOLVED", "ESCALATED", "DE_ESCALATED", "PERSISTING"]
+            chart = pd.DataFrame(
+                {"change": [l.title().replace("_", " ") for l in labels],
+                 "count": [counters.get(l, 0) for l in labels]}
+            ).set_index("change")
+            st.bar_chart(chart)
         else:
-            st.info("No scan deltas recorded yet.")
+            st.info("No scan deltas recorded yet. The first re-scan of a target will populate this timeline.")
+
+        history = db.posture_history(limit=120)
+        st.markdown("### Posture trend")
+        if history:
+            trend = pd.DataFrame(list(reversed(history)))
+            trend["created_at"] = pd.to_datetime(trend["created_at"], errors="coerce")
+            st.line_chart(trend.set_index("created_at")["score"])
+            st.caption(f"{len(history)} recorded scan run(s) — newest score {history[0]['score']}/100 ({history[0]['grade']}).")
+        else:
+            st.caption("Posture history builds up as the autonomous scan runs. The score above is live.")
+
+        if current_posture.get("drivers"):
+            st.markdown("### What is driving the score")
+            drivers = pd.DataFrame(current_posture["drivers"])
+            st.dataframe(drivers, use_container_width=True)
+
+        st.markdown("### Recent change log")
+        recent = db.recent_deltas(limit=25)
+        if recent:
+            table = pd.DataFrame(recent)
+            keep = [c for c in ["created_at", "target", "run_id", "change_type", "finding_fp"] if c in table.columns]
+            st.dataframe(table[keep], use_container_width=True)
+        else:
+            st.info("No change events recorded yet.")
+
+        latest_run = db.latest_evidence_run()
+        if latest_run:
+            st.markdown("### Proof pack")
+            st.caption(
+                "The proof pack is the audit artefact: every record, its payload, the previous hash and "
+                "its own hash. Recompute the chain independently and it should match exactly."
+            )
+            import tempfile
+            pack_path = tempfile.gettempdir() + f"/mhzaly-proof-{latest_run}.json"
+            manifest = db.export_proof_pack(latest_run, pack_path)
+            st.download_button(
+                "⬇️ Download proof pack (JSON)",
+                json.dumps(manifest, indent=2, default=str).encode("utf-8"),
+                file_name=f"proof-pack-{latest_run}.json",
+                mime="application/json",
+                use_container_width=True,
+            )
 
     elif module == "Platform Configuration":
         st.markdown("# Platform Telemetry & API Status")

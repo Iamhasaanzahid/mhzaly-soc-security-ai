@@ -84,3 +84,32 @@ def test_forensics_vault_roundtrip(temp_db):
     artifacts = db.get_forensics_artifacts()
     assert len(artifacts) == 1
     assert artifacts[0]["artifact_value"] == "203.0.113.9"
+
+
+def test_posture_history_roundtrip(temp_db):
+    assert db.posture_history() == []
+    db.record_posture("run-1", "example.com", {"score": 82, "grade": "B", "verified_count": 3})
+    rows = db.posture_history()
+    assert len(rows) == 1
+    assert rows[0]["score"] == 82 and rows[0]["grade"] == "B"
+
+
+def test_delta_counters_and_recent_events(temp_db):
+    db.store_delta("example.com", "run-1", {
+        "summary": {"new": 2, "resolved": 1, "persisting": 0, "escalated": 0, "de_escalated": 0},
+        "new_findings": [{"kind": "weak_headers", "marker": "HSTS"}, {"kind": "open_port", "marker": "21"}],
+        "resolved_findings": [{"kind": "tls_untrusted", "marker": "chain"}],
+    })
+    counts = db.delta_counters(days=30)
+    assert counts.get("NEW") == 2
+    assert counts.get("RESOLVED") == 1
+    assert len(db.recent_deltas()) == 3
+
+
+def test_latest_evidence_run_is_none_when_ledger_empty(temp_db):
+    assert db.latest_evidence_run() is None
+    db.record_evidence("run-42", "example.com", [{
+        "kind": "weak_headers", "marker": "HSTS", "summary": "missing HSTS",
+        "severity": "MEDIUM", "confidence": 88, "verified": True, "details": {},
+    }])
+    assert db.latest_evidence_run() == "run-42"

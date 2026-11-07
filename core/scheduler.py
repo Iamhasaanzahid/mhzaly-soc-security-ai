@@ -326,6 +326,8 @@ def run_scan_cycle(target: str, target_id: int, cfg: dict):
         delta = delta_between(previous_findings, current_findings, target)
         db.store_delta(target, run_id, delta)
         db.record_evidence(run_id, target, current_findings)
+        from .posture import posture_score
+        db.record_posture(run_id, target, posture_score(current_findings))
         db.mark_scanned(target_id)
         db.finish_scan_run(run_id, "SUCCESS", new_count)
         logger.info(
