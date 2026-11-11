@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mhzaly-soc-security-ai"
-version = "21.2.0"
+version = "21.3.0"
 description = "MHZALY — autonomous SOC and attack-surface intelligence. Five focused workspaces, proof-carrying findings, and client-ready human-voice reports."
 readme = "README.md"
 requires-python = ">=3.10"

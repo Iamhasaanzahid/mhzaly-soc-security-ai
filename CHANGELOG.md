@@ -1,3 +1,23 @@
+## [21.3.0] — 2026-11-11
+
+**Real-world front door.** The operations center now reads live data, and the
+public site is a full product site instead of a placeholder.
+
+### Added
+
+- **Live Operations Center** — threat level, posture, verified-finding count,
+  active targets, evidence records, chain status, last scan and 30-day change
+  total, all computed from the shared database. Severity chart, recent findings
+  and scan-run tables, and an engine-status row.
+- **Product website** in `docs/`: responsive hero with a product preview, five
+  workspace cards, proof pipeline, report sample, deployment options, FAQ,
+  SEO/OpenGraph metadata, sitemap, robots, favicon, reduced-motion support and
+  Netlify security headers (`docs/_headers`).
+
+### Changed
+
+- Version bumped to 21.3.0.
+
 ## [21.2.0] — 2026-11-06
 
 **Proof & Posture command centre.** The proof layer is now something an auditor can

@@ -1724,18 +1724,94 @@ def main():
             st.session_state.authenticated = False
             st.rerun()
         st.markdown("---")
-        st.caption("MHZALY v21.2.0 · All modules · Proof & posture")
+        st.caption("MHZALY v21.3.0 · Live operations · Proof & posture")
         st.caption("Authorized use only — scan assets you own or have written permission to test.")
 
     if module == "Command Telemetry Center":
-        st.markdown("# Purple Team Operations Center")
-        st.markdown("<p style='color: #9ca3af;'>Aggregated telemetry across offensive recon and defensive SOC monitoring.</p>", unsafe_allow_html=True)
+        st.markdown("# Operations Center")
+        st.markdown(
+            "<p style='color: #9ca3af;'>Live state from the shared database. Every number on this page is "
+            "computed from real scan history — no demo values.</p>",
+            unsafe_allow_html=True,
+        )
+
+        try:
+            targets = db.list_targets()
+            findings = db.recent_findings(limit=500)
+            runs = db.recent_scan_runs(limit=25)
+            ev_status = db.verify_evidence()
+            posture = posture_mod.posture_score(findings)
+        except Exception as exc:
+            st.error(f"Database unavailable: {exc}")
+            targets, findings, runs = [], [], []
+            ev_status = {"ok": False, "records": 0}
+            posture = {"score": 0, "grade": "—", "drivers": []}
+
+        active_targets = [t for t in targets if t.get("active")]
+        verified = [f for f in findings if f.get("verified")]
+        sev_rank = ["INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"]
+        worst = max(
+            (str(f.get("severity") or "INFO").upper() for f in verified),
+            key=lambda s: sev_rank.index(s) if s in sev_rank else 0,
+            default="NONE",
+        )
+        threat = {"CRITICAL": "CRITICAL", "HIGH": "ELEVATED", "MEDIUM": "GUARDED",
+                  "LOW": "LOW", "INFO": "LOW"}.get(worst, "MINIMAL")
 
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Threat Level", "ELEVATED", "Orange")
-        c2.metric("NVD API Key", "Accelerated" if nvd_key else "Standard", "NIST v2.0")
-        c3.metric("Groq AI Engine", "Online" if groq_key else "Offline", "openai/gpt-oss-120b")
-        c4.metric("SQLite DB", "Connected", "Active")
+        c1.metric("Threat Level", threat)
+        c2.metric("Posture Score", f"{posture['score']}/100 · {posture['grade']}")
+        c3.metric("Verified findings", len(verified))
+        c4.metric("Active targets", len(active_targets))
+
+        d1, d2, d3, d4 = st.columns(4)
+        d1.metric("Evidence records", ev_status.get("records", 0))
+        d2.metric("Evidence chain", "VERIFIED" if ev_status.get("ok") else "BROKEN")
+        d3.metric("Last scan", (runs[0]["started_at"] if runs else "—"))
+        deltas = db.delta_counters(days=30)
+        d4.metric("Changes (30d)", sum(deltas.values()))
+
+        if not targets:
+            st.info(
+                "No targets yet. Add one under **Autonomous SOC (Live DB)** — the dashboard will fill "
+                "itself as soon as the first scan completes."
+            )
+
+        st.markdown("### Findings by severity")
+        if findings:
+            counts = (
+                pd.Series([str(f.get("severity") or "INFO").upper() for f in findings])
+                .value_counts()
+                .reindex(sev_rank)
+                .fillna(0)
+                .astype(int)
+            )
+            st.bar_chart(counts)
+        else:
+            st.caption("No findings recorded yet.")
+
+        left, right = st.columns(2)
+        with left:
+            st.markdown("### Recent findings")
+            if findings:
+                cols = [c for c in ["target", "category", "severity", "summary", "last_seen"] if c in findings[0]]
+                st.dataframe(pd.DataFrame(findings)[cols].head(15), use_container_width=True)
+            else:
+                st.caption("Nothing to show yet.")
+        with right:
+            st.markdown("### Recent scan runs")
+            if runs:
+                cols = [c for c in ["target", "started_at", "status", "new_findings_count", "error"] if c in runs[0]]
+                st.dataframe(pd.DataFrame(runs)[cols].head(15), use_container_width=True)
+            else:
+                st.caption("No scan history yet.")
+
+        st.markdown("### Engine status")
+        e1, e2, e3, e4 = st.columns(4)
+        e1.metric("NVD API", "Accelerated" if nvd_key else "Standard")
+        e2.metric("Groq AI", "Online" if groq_key else "Offline")
+        e3.metric("VirusTotal", "Active" if vt_key else "Not set")
+        e4.metric("SQLite", "Connected")
 
     elif module == "AI Security Engineer":
         st.markdown("# 🧠 AI Security Engineer")

@@ -2,106 +2,333 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>MHZALY — Autonomous SOC &amp; Attack-Surface Intelligence</title>
-<meta name="description" content="Proof-carrying SOC platform. Verified findings, human-voice reports, five focused workspaces.">
-<style>
-  :root{--bg:#07090e;--panel:#0d1117;--line:#1f2937;--ink:#f3f4f6;--dim:#9ca3af;--acc:#2563eb;--acc2:#7c3aed;}
-  *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.6;-webkit-font-smoothing:antialiased}
-  .wrap{max-width:1060px;margin:0 auto;padding:0 24px}
-  header{display:flex;justify-content:space-between;align-items:center;padding:26px 0;border-bottom:1px solid var(--line)}
-  header .brand{font-weight:800;letter-spacing:.04em;font-size:19px}
-  header .brand span{color:var(--acc)}
-  header nav a{color:var(--dim);text-decoration:none;margin-left:22px;font-size:14px}
-  header nav a:hover{color:var(--ink)}
-  .hero{padding:88px 0 64px;text-align:center;border-bottom:1px solid var(--line)}
-  .hero .tag{display:inline-block;border:1px solid #334155;background:#0d1420;color:#93c5fd;padding:6px 14px;border-radius:999px;font-size:12px;letter-spacing:.14em;text-transform:uppercase;margin-bottom:22px}
-  .hero h1{font-size:clamp(34px,6vw,58px);line-height:1.08;margin:0 0 18px;font-weight:800;letter-spacing:-0.02em}
-  .hero h1 em{font-style:normal;background:linear-gradient(90deg,var(--acc),var(--acc2));-webkit-background-clip:text;background-clip:text;color:transparent}
-  .hero p{color:var(--dim);font-size:18px;max-width:640px;margin:0 auto 34px}
-  .cta{display:inline-block;background:var(--acc);color:#fff;padding:15px 34px;border-radius:12px;font-weight:700;font-size:16px;text-decoration:none;box-shadow:0 12px 40px rgba(37,99,235,.35)}
-  .cta.alt{background:transparent;border:1px solid var(--line);box-shadow:none;color:var(--ink)}
-  section{padding:70px 0;border-bottom:1px solid var(--line)}
-  h2{font-size:32px;margin:0 0 14px;font-weight:800;letter-spacing:-0.01em}
-  h2 em{font-style:normal;color:var(--acc)}
-  .lead{color:var(--dim);max-width:720px;margin-bottom:38px}
-  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:24px}
-  .card h3{margin:0 0 8px;font-size:17px}
-  .card p{margin:0;color:var(--dim);font-size:14px}
-  .card .ic{font-size:22px;margin-bottom:10px}
-  .proof{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}
-  .proof .card{border-left:3px solid var(--acc)}
-  .big{margin-top:54px}
-  .big h2{font-size:44px}
-  footer{padding:40px 0;color:var(--dim);font-size:13px}
-  .badge{display:inline-block;padding:3px 10px;border:1px solid var(--line);border-radius:999px;font-size:12px;margin-right:6px;color:var(--dim)}
-  @media (max-width:640px){header nav{display:none} .hero{padding:60px 0 44px}}
-</style>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MHZALY — Proof-carrying SOC & attack-surface intelligence</title>
+<meta name="description" content="MHZALY is an autonomous security operations platform: verified findings, hash-chained evidence, explainable posture scores and client-ready reports written in a consultant's voice.">
+<meta name="theme-color" content="#05070c">
+<link rel="canonical" href="https://iamhasaanzahid.github.io/mhzaly-soc-security-ai/">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="styles.css">
+
+<meta property="og:type" content="website">
+<meta property="og:title" content="MHZALY — Proof-carrying SOC">
+<meta property="og:description" content="Verified findings. Hash-chained evidence. Explainable posture. Reports a senior consultant would sign.">
+<meta property="og:url" content="https://iamhasaanzahid.github.io/mhzaly-soc-security-ai/">
+<meta property="og:image" content="https://iamhasaanzahid.github.io/mhzaly-soc-security-ai/favicon.svg">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="MHZALY — Proof-carrying SOC">
+<meta name="twitter:description" content="Verified findings. Hash-chained evidence. Explainable posture. Reports a senior consultant would sign.">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "MHZALY",
+  "applicationCategory": "SecurityApplication",
+  "operatingSystem": "Web",
+  "description": "Proof-carrying security operations platform with verified findings, hash-chained evidence and explainable posture scoring.",
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+  "license": "https://opensource.org/licenses/MIT",
+  "url": "https://iamhasaanzahid.github.io/mhzaly-soc-security-ai/"
+}
+</script>
 </head>
 <body>
-<header class="wrap">
-  <div class="brand">MHZ<span>ALY</span></div>
-  <nav>
-    <a href="#workspaces">Workspaces</a>
-    <a href="#proof">How it proves</a>
-    <a href="#console">Console</a>
-  </nav>
+
+<header class="nav" id="nav">
+  <div class="wrap nav-in">
+    <a class="brand" href="#top" aria-label="MHZALY home">
+      <span class="mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v6c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9V6l7-3z"/><path d="M9 12l2 2 4-4"/></svg>
+      </span>
+      MHZALY
+    </a>
+    <nav class="nav-links" id="navLinks" aria-label="Primary">
+      <a href="#workspaces">Workspaces</a>
+      <a href="#proof">How it proves</a>
+      <a href="#reports">Reports</a>
+      <a href="#deploy">Deploy</a>
+      <a href="#faq">FAQ</a>
+    </nav>
+    <div class="nav-cta">
+      <a class="btn btn-ghost" href="https://github.com/Iamhasaanzahid/mhzaly-soc-security-ai" target="_blank" rel="noreferrer">GitHub</a>
+      <a class="btn btn-primary" href="https://mhzaly-soc.streamlit.app" target="_blank" rel="noreferrer">Open console</a>
+      <button class="menu-btn" id="menuBtn" aria-label="Menu" aria-expanded="false" aria-controls="navLinks">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
+    </div>
+  </div>
 </header>
 
-<section class="hero">
-  <div class="wrap">
-    <div class="tag">Autonomous SOC · Proof-carrying</div>
-    <h1>Your attack surface, <em>proven.</em></h1>
-    <p>Verified findings with hash-chained evidence, reports that read like a senior consultant wrote them, and an operator workflow that never ships unfunded risk.</p>
-    <a class="cta" href="https://mhzaly-soc.streamlit.app" target="_blank" rel="noreferrer">Open the live console →</a>
-    <div style="margin-top:18px"><a class="cta alt" href="https://github.com/Iamhasaanzahid/mhzaly-soc-security-ai">View source on GitHub</a></div>
-  </div>
-</section>
+<main id="top">
 
-<section id="workspaces">
-  <div class="wrap">
-    <h2>Five workspaces. <em>No menu, no noise.</em></h2>
-    <p class="lead">Every capability lives under one specific home — scan and verify, findings and response, AI reports, the offensive arsenal, and proof &amp; platform.</p>
-    <div class="grid">
-      <div class="card"><div class="ic">🎯</div><h3>Scan &amp; Verify</h3><p>Command telemetry, AI security engineer, autonomous SOC loop, red/blue agent pipeline.</p></div>
-      <div class="card"><div class="ic">🛡️</div><h3>Findings &amp; Response</h3><p>Vulnerability manager, AI triage copilot, forensics &amp; IOC vault, SIEM simulator, history.</p></div>
-      <div class="card"><div class="ic">📄</div><h3>AI Reports</h3><p>Client report studio (Markdown + PDF), AI security chatbot.</p></div>
-      <div class="card"><div class="ic">🧰</div><h3>Arsenal</h3><p>Threat intel lookup, HTTP repeater / API fuzzer, Sigma generator, encoder &amp; hasher.</p></div>
-      <div class="card"><div class="ic">📊</div><h3>Proof &amp; Platform</h3><p>Analytics, proof &amp; posture score, platform configuration.</p></div>
+  <!-- HERO -->
+  <section class="hero">
+    <div class="wrap hero-grid">
+      <div>
+        <span class="eyebrow"><span class="dot"></span> Proof-carrying SOC · v21.2</span>
+        <h1>Security that can <span class="grad">prove itself.</span></h1>
+        <p class="lead">Most scanners hand you a pile of observations. MHZALY hands you a short list of verified findings, the evidence behind each one, and a report a senior consultant would put their name on.</p>
+        <div class="hero-cta">
+          <a class="btn btn-primary btn-lg" href="https://mhzaly-soc.streamlit.app" target="_blank" rel="noreferrer">Launch the console →</a>
+          <a class="btn btn-ghost btn-lg" href="#proof">See how it proves</a>
+        </div>
+        <div class="hero-note">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+          Open source · MIT licensed · no card, no sales call
+        </div>
+        <div class="chips">
+          <span class="chip">Python 3.10+</span>
+          <span class="chip">Streamlit</span>
+          <span class="chip">SQLite</span>
+          <span class="chip">CI + CodeQL</span>
+        </div>
+      </div>
+
+      <div class="mock" aria-hidden="true">
+        <div class="window">
+          <div class="win-bar">
+            <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+            <span class="url">mhzaly-soc.streamlit.app / operations</span>
+          </div>
+          <div class="win-body">
+            <div class="side">
+              <div class="brandline">MHZALY</div>
+              <div class="side-item active"><i></i> Operations</div>
+              <div class="side-item"><i></i> AI Security Engineer</div>
+              <div class="side-item"><i></i> Findings</div>
+              <div class="side-item"><i></i> Client Reports</div>
+              <div class="side-item"><i></i> Proof &amp; Posture</div>
+              <div class="side-item"><i></i> Arsenal</div>
+              <div class="side-item"><i></i> Configuration</div>
+            </div>
+            <div class="mainpane">
+              <div class="metricrow">
+                <div class="mini"><div class="lbl">Posture</div><div class="val green">82<span style="font-size:9px;color:#64748b">/100</span></div></div>
+                <div class="mini"><div class="lbl">Verified</div><div class="val">7</div></div>
+                <div class="mini"><div class="lbl">Chain</div><div class="val blue">OK</div></div>
+                <div class="mini"><div class="lbl">Targets</div><div class="val">3</div></div>
+              </div>
+              <div class="chartbox">
+                <div class="ct"><span>Posture trend</span><span>last 14 runs</span></div>
+                <div class="bars">
+                  <span style="height:38%"></span><span style="height:52%"></span><span style="height:44%"></span>
+                  <span style="height:66%"></span><span style="height:58%"></span><span style="height:74%"></span>
+                  <span style="height:69%"></span><span style="height:82%"></span><span style="height:76%"></span>
+                  <span style="height:88%"></span><span style="height:84%"></span><span style="height:92%"></span>
+                  <span style="height:86%"></span><span style="height:95%"></span>
+                </div>
+              </div>
+              <div class="findingrow"><span class="pill high">High</span><span class="grow">Verified exposure — .env reachable</span><span class="pill ok">Chained</span></div>
+              <div class="findingrow"><span class="pill med">Med</span><span class="grow">Missing HSTS on apex domain</span><span class="pill ok">Chained</span></div>
+              <div class="findingrow"><span class="pill ok">Info</span><span class="grow">Subdomains treated as inventory, not risk</span><span class="pill ok">7 records</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- TRUST -->
+  <div class="trust">
+    <div class="wrap trust-in">
+      <span class="trust-label">Built like production software</span>
+      <div class="trust-items">
+        <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6l8-4z"/></svg> CodeQL analysed</span>
+        <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg> 113 tests passing</span>
+        <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v16H4z"/><path d="M9 9h6v6H9z"/></svg> MIT licensed</span>
+        <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg> 24/7 autonomous scans</span>
+      </div>
     </div>
   </div>
-</section>
 
-<section id="proof">
-  <div class="wrap">
-    <h2>How the platform <em>proves</em> itself.</h2>
-    <p class="lead">A finding only reaches a report when it survived the precision gate. Each reported finding carries a deterministic evidence fingerprint and commits into a hash-chained ledger — tampering with any past finding breaks the chain, loudly.</p>
-    <div class="proof">
-      <div class="card"><h3>01 · Score &amp; gate</h3><p>0–100 confidence per candidate, floor 70, severity floor MEDIUM, de-duplication across scans.</p></div>
-      <div class="card"><h3>02 · Verify</h3><p>Real evidence only — calibrated probes, TLS chain checks, content signatures.</p></div>
-      <div class="card"><h3>03 · Chain</h3><p>Append-only hash chain per scan run, head hash + proof pack export.</p></div>
-      <div class="card"><h3>04 · Posture</h3><p>Explainable 0–100 posture with per-factor drivers and scan-to-scan delta.</p></div>
+  <!-- WORKSPACES -->
+  <section class="section" id="workspaces">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <div class="kicker">The platform</div>
+        <h2>Five workspaces. <span class="grad">Nothing buried.</span></h2>
+        <p class="lead">Every capability has one specific home. Operators do not hunt through menus, and nothing important hides behind a collapsed section.</p>
+      </div>
+      <div class="grid-3">
+        <a class="card reveal" href="https://mhzaly-soc.streamlit.app" target="_blank" rel="noreferrer">
+          <div class="ic">🎯</div><h3>Scan &amp; Verify</h3>
+          <p>AI Security Engineer, autonomous SOC loop, red/blue agent pipeline and live command telemetry — one target in, one verified assessment out.</p>
+          <div class="tags"><span class="tag">recon</span><span class="tag">CVE</span><span class="tag">TLS</span></div>
+        </a>
+        <a class="card reveal" href="https://mhzaly-soc.streamlit.app" target="_blank" rel="noreferrer">
+          <div class="ic">🛡️</div><h3>Findings &amp; Response</h3>
+          <p>Ticket manager, AI triage copilot, forensics and IOC vault, SIEM log simulator and a complete activity history.</p>
+          <div class="tags"><span class="tag">triage</span><span class="tag">IOC</span><span class="tag">SIEM</span></div>
+        </a>
+        <a class="card reveal" href="https://mhzaly-soc.streamlit.app" target="_blank" rel="noreferrer">
+          <div class="ic">📄</div><h3>AI Reports</h3>
+          <p>Client Report Studio and the security chatbot. Markdown and PDF deliverables with posture, remediation order and the evidence-chain statement.</p>
+          <div class="tags"><span class="tag">PDF</span><span class="tag">human voice</span></div>
+        </a>
+        <a class="card reveal" href="https://mhzaly-soc.streamlit.app" target="_blank" rel="noreferrer">
+          <div class="ic">🧰</div><h3>Arsenal</h3>
+          <p>Threat-intel lookup, HTTP repeater / API fuzzer, Sigma rule generator and the encoder/hasher toolkit.</p>
+          <div class="tags"><span class="tag">Sigma</span><span class="tag">fuzzer</span><span class="tag">VT</span></div>
+        </a>
+        <a class="card wide reveal" href="https://mhzaly-soc.streamlit.app" target="_blank" rel="noreferrer">
+          <div class="ic">📊</div><h3>Proof &amp; Platform</h3>
+          <p>The part nobody else ships. A hash-chained evidence ledger, an explainable 0–100 posture score with drivers, a scan-to-scan change timeline, one-click proof-pack export, analytics and configuration.</p>
+          <div class="tags"><span class="tag">hash chain</span><span class="tag">posture</span><span class="tag">delta</span><span class="tag">audit</span></div>
+        </a>
+      </div>
     </div>
-  </div>
-</section>
+  </section>
 
-<section id="console">
-  <div class="wrap" style="text-align:center">
-    <h2 class="big">Ready when the client is. <em>Ready when you are.</em></h2>
-    <p class="lead">Start the autonomous scan, then read the report like a consultant — or run the Human Council and let the skeptic sign off on every confidence level.</p>
-    <a class="cta" href="https://mhzaly-soc.streamlit.app" target="_blank" rel="noreferrer">Launch the MHZALY console →</a>
-  </div>
-</section>
+  <!-- PROOF -->
+  <section class="section" id="proof">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <div class="kicker">The difference</div>
+        <h2>Every claim carries its <span class="grad">own proof.</span></h2>
+        <p class="lead">A finding only reaches a report after it survives verification. Then it is committed to a hash chain, which means the report cannot be quietly edited later.</p>
+      </div>
+      <div class="pipeline">
+        <div class="step reveal"><h3>Score &amp; gate</h3><p>Every candidate is scored 0–100, de-duplicated across runs and filtered by a confidence floor and a severity floor.</p></div>
+        <div class="step reveal"><h3>Verify</h3><p>Calibrated probes, real TLS chain validation and content signatures. A 200 OK is never accepted as proof on its own.</p></div>
+        <div class="step reveal"><h3>Chain</h3><p>Each verified finding commits to the hash of the record before it. Edit one past record and the whole chain breaks.</p></div>
+        <div class="step reveal"><h3>Explain</h3><p>Posture is a rubric, not a vibe: each factor's weight, the finding behind it and the confidence that produced it.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- REPORTS -->
+  <section class="section" id="reports">
+    <div class="wrap split">
+      <div class="reveal">
+        <div class="kicker">Reports</div>
+        <h2>Written like a consultant. <span class="grad">Not a scanner.</span></h2>
+        <p class="lead">The Human Council argues with itself before you ever read the report: a consultant, a red teamer, a blue teamer and a skeptic. Then the assessment is written in plain English.</p>
+        <ul class="checklist">
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg> Evidence first, opinions clearly labelled as opinions.</li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg> A skeptic perspective that challenges the confidence level.</li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg> Hallucination guard: identifiers not in the evidence are flagged.</li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg> Client deliverables export as Markdown and PDF.</li>
+        </ul>
+      </div>
+      <div class="reportcard reveal" aria-hidden="true">
+        <div class="rc-head">
+          <div><div class="t">Security Assessment — example.com</div><div class="s">Prepared for the client's engineering team · MHZALY</div></div>
+          <span class="pill ok">Chain verified</span>
+        </div>
+        <div class="rc-body">
+          <div class="rc-score">
+            <div class="ring"><span>80</span></div>
+            <div><div style="font-weight:750;font-size:14px">Posture: B</div><div style="font-size:11.5px;color:#64748b">3 verified findings drive the score</div></div>
+          </div>
+          <div class="rc-line"><i style="width:78%"></i></div>
+          <div class="rc-line"><i style="width:46%;background:linear-gradient(90deg,#fbbf24,#f97316)"></i></div>
+          <div class="rc-quote">
+            <b>What I observed:</b> the apex host returns a valid certificate but omits HSTS, and <span style="font-family:ui-monospace,monospace;font-size:12px">/.env</span> returned a content-signature match. Both are reproduced in the evidence bundle; nothing else in this section is inferred.
+          </div>
+          <div class="findingrow" style="margin-top:14px"><span class="pill high">High</span><span class="grow">Verified exposure — /.env</span></div>
+          <div class="findingrow" style="margin-top:8px"><span class="pill med">Med</span><span class="grow">Missing HSTS</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- STATS -->
+  <section class="section">
+    <div class="wrap">
+      <div class="band">
+        <div class="cell reveal"><div class="n" data-count="18">18</div><div class="l">Modules</div></div>
+        <div class="cell reveal"><div class="n" data-count="113">113</div><div class="l">Tests passing</div></div>
+        <div class="cell reveal"><div class="n" data-count="4">4</div><div class="l">Council perspectives</div></div>
+        <div class="cell reveal"><div class="n" data-count="0">0</div><div class="l">Fabricated findings</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- DEPLOY -->
+  <section class="section" id="deploy">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <div class="kicker">Deployment</div>
+        <h2>Run it your way. <span class="grad">No lock-in.</span></h2>
+        <p class="lead">The same codebase runs as a hosted console, a self-hosted service, or inside an air-gapped network. The database is a single SQLite file you own.</p>
+      </div>
+      <div class="plans">
+        <div class="plan reveal">
+          <div class="name">Hosted</div>
+          <div class="price">Free <small>· Streamlit Cloud</small></div>
+          <p>One-click deploy from GitHub. Best for evaluating the platform and running a small estate.</p>
+          <ul><li>Automatic redeploy on push</li><li>Secrets managed by Streamlit</li><li>Public or private app</li></ul>
+          <a class="btn btn-ghost" href="https://mhzaly-soc.streamlit.app" target="_blank" rel="noreferrer">Open console</a>
+        </div>
+        <div class="plan featured reveal">
+          <div class="name">Self-hosted</div>
+          <div class="price">Full control</div>
+          <p>Run the dashboard and the autonomous scheduler on your own host. The scheduler is the only always-on process.</p>
+          <ul><li>SQLite state you can back up</li><li>Discord / Slack / Teams alerts</li><li>Scheduled scans + delta history</li><li>Proof-pack export per run</li></ul>
+          <a class="btn btn-primary" href="https://github.com/Iamhasaanzahid/mhzaly-soc-security-ai#quick-start" target="_blank" rel="noreferrer">Read the quick start</a>
+        </div>
+        <div class="plan reveal">
+          <div class="name">Air-gapped</div>
+          <div class="price">Offline</div>
+          <p>No external calls required for the local analyst engine. Threat-intel keys are optional and degrade gracefully.</p>
+          <ul><li>Deterministic local reports</li><li>No telemetry, no phone-home</li><li>Same evidence chain</li></ul>
+          <a class="btn btn-ghost" href="https://github.com/Iamhasaanzahid/mhzaly-soc-security-ai" target="_blank" rel="noreferrer">View source</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FAQ -->
+  <section class="section" id="faq">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <div class="kicker">Questions</div>
+        <h2>Straight answers.</h2>
+      </div>
+      <div class="faq">
+        <details class="reveal"><summary>Is this just another vulnerability scanner?</summary><p>No. It is an operations platform built around the opposite premise: fewer findings, each one verified, each one carrying evidence, and each one explainable in a client report. Subdomains are inventory, not findings.</p></details>
+        <details class="reveal"><summary>What does "proof-carrying" actually mean?</summary><p>Every verified finding is written to an append-only ledger where each record commits to the hash of the record before it. If a past finding is edited, the chain no longer verifies. The proof pack exports the whole chain so an auditor can recompute it independently.</p></details>
+        <details class="reveal"><summary>Do I need an LLM API key?</summary><p>No. The local analyst engine writes a complete report without any network call. An optional Groq key adds model-polished prose, but the findings and the evidence are identical either way.</p></details>
+        <details class="reveal"><summary>What can it scan?</summary><p>Public web surfaces you own or are authorised to test: headers, TLS, cookies, CORS, bounded same-origin crawl, robots/sitemap mining, SPF/DMARC, subdomain enumeration, and CPE-confirmed CVE correlation. Targets resolving to private, loopback, link-local or cloud-metadata addresses are refused by the connector layer.</p></details>
+        <details class="reveal"><summary>Is it safe to run against a client?</summary><p>Only with written authorisation. The console requires an explicit authorisation acknowledgement before a scan, enforces a per-day scan quota, and refuses internal addresses. You remain responsible for scope.</p></details>
+        <details class="reveal"><summary>Where does the data live?</summary><p>In a single SQLite file on the host you run it on. There is no external telemetry. Back it up like any other database, and treat the proof pack as an audit artefact.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <!-- FINAL CTA -->
+  <section class="final">
+    <div class="wrap reveal">
+      <span class="eyebrow"><span class="dot"></span> Open source · MIT</span>
+      <h2 style="margin-top:20px">Stop shipping <span class="grad">unprovable risk.</span></h2>
+      <p class="lead">Open the console, point it at a host you own, and read the first report. It will tell you what it found, what it could not verify, and how to prove the difference.</p>
+      <div class="hero-cta">
+        <a class="btn btn-primary btn-lg" href="https://mhzaly-soc.streamlit.app" target="_blank" rel="noreferrer">Launch the console →</a>
+        <a class="btn btn-ghost btn-lg" href="https://github.com/Iamhasaanzahid/mhzaly-soc-security-ai" target="_blank" rel="noreferrer">Star on GitHub</a>
+      </div>
+    </div>
+  </section>
+</main>
 
 <footer>
   <div class="wrap">
-    <span class="badge">v21.0.0</span>
-    <span class="badge">Human-voice reports</span>
-    <span class="badge">Proof-carrying</span>
-    <span style="float:right">Authorized use only — scan assets you own or have permission to test.</span>
+    <div class="foot-grid">
+      <div class="foot-brand">
+        <a class="brand" href="#top"><span class="mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="M12 3l7 3v6c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9V6l7-3z"/></svg></span>MHZALY</a>
+        <p>Autonomous SOC and attack-surface intelligence. Verified findings, hash-chained evidence, human-voice reports.</p>
+      </div>
+      <div class="foot-col"><h4>Product</h4><a href="#workspaces">Workspaces</a><a href="#proof">Proof layer</a><a href="#reports">Reports</a><a href="#deploy">Deployment</a></div>
+      <div class="foot-col"><h4>Resources</h4><a href="https://github.com/Iamhasaanzahid/mhzaly-soc-security-ai#readme" target="_blank" rel="noreferrer">Documentation</a><a href="https://github.com/Iamhasaanzahid/mhzaly-soc-security-ai/blob/main/CHANGELOG.md" target="_blank" rel="noreferrer">Changelog</a><a href="https://github.com/Iamhasaanzahid/mhzaly-soc-security-ai/blob/main/SECURITY.md" target="_blank" rel="noreferrer">Security policy</a></div>
+      <div class="foot-col"><h4>Project</h4><a href="https://github.com/Iamhasaanzahid/mhzaly-soc-security-ai" target="_blank" rel="noreferrer">GitHub</a><a href="https://github.com/Iamhasaanzahid/mhzaly-soc-security-ai/blob/main/LICENSE" target="_blank" rel="noreferrer">MIT licence</a><a href="https://github.com/Iamhasaanzahid/mhzaly-soc-security-ai/issues" target="_blank" rel="noreferrer">Issues</a></div>
+    </div>
+    <div class="foot-bottom">
+      <span>© <span id="year">2026</span> MHZALY · built by Muhammad Hassaan Zahid</span>
+      <span class="warn">Authorised use only — scan assets you own or have written permission to test.</span>
+    </div>
   </div>
 </footer>
+
+<script src="app.js" defer></script>
 </body>
 </html>
