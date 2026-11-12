@@ -12,6 +12,14 @@ the last places where the UI could lie or look unfinished.
   branded `docs/404.html` and `docs/.nojekyll` so GitHub Pages serves the site
   exactly as authored.
 
+### Fixed
+
+- Console URL corrected to `mhzalyseci.streamlit.app` across the website and
+  README — the previous guess pointed at a name that does not exist.
+- Home dashboard calls each DB helper independently and degrades one widget at
+  a time; a stale `core/db.py` in a deployed environment no longer blanks the
+  page with a misleading "Database unavailable" error.
+
 ### Changed
 
 - `MHZALY_DB_PATH` environment variable controls the database location (default

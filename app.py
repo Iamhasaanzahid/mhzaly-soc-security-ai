@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MHZALY — AUTONOMOUS SOC & ATTACK-SURFACE INTELLIGENCE v21.0.0 - OPERATOR CONSOLE EDITION
+MHZALY — AUTONOMOUS SOC & ATTACK-SURFACE INTELLIGENCE v21.3.1 - OPERATOR CONSOLE EDITION
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Comprehensive Purple Team Operations Suite (Red Team Recon + Blue Team SOC Automation)
 Author: Muhammad Hassaan Zahid
@@ -1707,7 +1707,7 @@ def main():
             "background:linear-gradient(135deg,#0b1220,#111827);margin-bottom:12px;'>"
             "<div style='font-size:11px;letter-spacing:.18em;color:#60a5fa;text-transform:uppercase;'>MHZALY</div>"
             "<div style='font-size:20px;font-weight:700;color:#f9fafb;line-height:1.2;'>Security Operations</div>"
-            "<div style='font-size:11px;color:#9ca3af;margin-top:4px;'>Proof-carrying console · v21.0.0</div>"
+            "<div style='font-size:11px;color:#9ca3af;margin-top:4px;'>Proof-carrying console · v21.3.1</div>"
             "</div>",
             unsafe_allow_html=True,
         )
@@ -1752,19 +1752,28 @@ def main():
             unsafe_allow_html=True,
         )
 
+        # Each helper is called independently so a stale or partial deployment
+        # (e.g. an older core/db.py still cached in the cloud) degrades one
+        # widget instead of blanking the whole dashboard with a red error.
+        def _db_call(name, *args, default=None, **kwargs):
+            fn = getattr(db, name, None)
+            if fn is None:
+                return default
+            try:
+                return fn(*args, **kwargs)
+            except Exception:
+                return default
+
+        targets = _db_call("list_targets", default=[]) or []
+        findings = _db_call("recent_findings", limit=500, default=[]) or []
+        runs = _db_call("recent_scan_runs", limit=25, default=[]) or []
+        ev_status = _db_call("verify_evidence", default=None) or {"ok": False, "records": 0}
         try:
-            targets = db.list_targets()
-            findings = db.recent_findings(limit=500)
-            runs = db.recent_scan_runs(limit=25)
-            ev_status = db.verify_evidence()
             posture = posture_mod.posture_score(findings)
-            deltas = db.delta_counters(days=30)
-        except Exception as exc:
-            st.error(f"Database unavailable: {exc}")
-            targets, findings, runs = [], [], []
-            ev_status = {"ok": False, "records": 0}
+        except Exception:
             posture = {"score": 0, "grade": "—", "drivers": []}
-            deltas = {}
+        deltas = _db_call("delta_counters", days=30, default={}) or {}
+        stale_db = getattr(db, "delta_counters", None) is None
 
         active_targets = [t for t in targets if t.get("active")]
         verified = [f for f in findings if f.get("verified")]
@@ -1789,7 +1798,14 @@ def main():
         d3.metric("Last scan", _pretty_ts(runs[0].get("started_at")) if runs else "—")
         d4.metric("Changes (30d)", sum(deltas.values()))
 
-        if not targets:
+        if stale_db:
+            st.warning(
+                "The running console is on an older `core/db.py` than the dashboard expects — the app "
+                "needs a redeploy to pick up the latest repository code. All numbers above are real; "
+                "the 30-day change counter is unavailable until then."
+            )
+
+        if not targets and not stale_db:
             st.info(
                 "No targets yet. Add one under **Autonomous SOC (Live DB)** — the dashboard will fill "
                 "itself as soon as the first scan completes."

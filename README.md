@@ -14,7 +14,7 @@
 
 </div>
 
-**[Website](https://iamhasaanzahid.github.io/mhzaly-soc-security-ai/) · [Live console](https://mhzaly-soc.streamlit.app) · [Architecture](docs/ARCHITECTURE.md)**
+**[Website](https://iamhasaanzahid.github.io/mhzaly-soc-security-ai/) · [Live console](https://mhzalyseci.streamlit.app) · [Architecture](docs/ARCHITECTURE.md)**
 
 > [!WARNING]
 > **Authorized use only.** This platform performs active reconnaissance against systems you nominate.
