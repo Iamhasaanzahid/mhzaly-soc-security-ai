@@ -9,7 +9,7 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-3776AB?logo=python&logoColor=white)](pyproject.toml)
 [![Streamlit](https://img.shields.io/badge/streamlit-1.28%2B-FF4B4B?logo=streamlit&logoColor=white)](https://streamlit.io)
 [![Tests](https://img.shields.io/badge/tests-110%20passing-brightgreen)](tests)
-[![Version](https://img.shields.io/badge/version-21.3.0-blueviolet)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-21.3.1-blueviolet)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 </div>
@@ -180,6 +180,20 @@ streamlit run app.py
 
 The dashboard ships with a dark theme in `.streamlit/config.toml`, so local and deployed
 environments render identically.
+
+### Docker (self-hosted)
+
+```bash
+cp secrets.toml.example .streamlit/secrets.toml   # credentials + optional API keys
+docker compose up -d --build                      # dashboard + 24/7 scheduler
+docker compose exec scheduler python -m core.scheduler add example.com 30
+```
+
+The console is on `http://localhost:8501`. Both services share the `soc_data` volume, and the
+database location is controlled by `MHZALY_DB_PATH` (defaults to `mhzaly_soc.db`), so state survives
+rebuilds. Back up that volume. Optional integration keys can be exported as environment variables
+(`DISCORD_WEBHOOK_URL`, `NVD_API_KEY`, `VIRUSTOTAL_API_KEY`, `ABUSEIPDB_API_KEY`, `ZOOMEYE_API_KEY`)
+or placed in a `.env` file next to `docker-compose.yml`.
 
 ---
 

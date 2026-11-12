@@ -1,3 +1,27 @@
+## [21.3.1] — 2026-11-12
+
+**Operational hardening.** Shipping what a real deployment needs, and removing
+the last places where the UI could lie or look unfinished.
+
+### Added
+
+- `Dockerfile`, `docker-compose.yml` and `.dockerignore` — dashboard plus the
+  long-lived scheduler sharing one `soc_data` volume, non-root user and a
+  container healthcheck against Streamlit's `/_stcore/health`.
+- `docs/og.png` (1200×630 social card), `docs/icon-180.png`, `docs/manifest.json`,
+  branded `docs/404.html` and `docs/.nojekyll` so GitHub Pages serves the site
+  exactly as authored.
+
+### Changed
+
+- `MHZALY_DB_PATH` environment variable controls the database location (default
+  unchanged), which is what makes the container volume safe to use.
+- Operations Center formats the last-scan timestamp as readable UTC instead of
+  a raw ISO string, and no longer queries deltas outside the guarded block.
+- A failed database initialisation now shows an actionable warning banner
+  instead of failing silently.
+- Version bumped to 21.3.1.
+
 ## [21.3.0] — 2026-11-11
 
 **Real-world front door.** The operations center now reads live data, and the

@@ -1,0 +1,14 @@
+{
+  "name": "MHZALY — Proof-carrying SOC",
+  "short_name": "MHZALY",
+  "description": "Verified findings, hash-chained evidence and explainable posture for security operations.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#05070c",
+  "theme_color": "#05070c",
+  "icons": [
+    { "src": "icon-180.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "favicon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

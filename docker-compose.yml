@@ -1,0 +1,30 @@
+services:
+  dashboard:
+    build: .
+    image: mhzaly-soc:latest
+    ports:
+      - "8501:8501"
+    volumes:
+      - soc_data:/data
+      - ./.streamlit:/app/.streamlit:ro
+    restart: unless-stopped
+
+  scheduler:
+    build: .
+    image: mhzaly-soc:latest
+    command: ["python", "-m", "core.scheduler", "run"]
+    environment:
+      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
+      NVD_API_KEY: ${NVD_API_KEY:-}
+      VIRUSTOTAL_API_KEY: ${VIRUSTOTAL_API_KEY:-}
+      ABUSEIPDB_API_KEY: ${ABUSEIPDB_API_KEY:-}
+      ZOOMEYE_API_KEY: ${ZOOMEYE_API_KEY:-}
+    volumes:
+      - soc_data:/data
+      - ./.streamlit:/app/.streamlit:ro
+    restart: unless-stopped
+    depends_on:
+      - dashboard
+
+volumes:
+  soc_data:

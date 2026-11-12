@@ -5,6 +5,7 @@ db.py — SQLite persistence module for MHZALY Autonomous SOC.
 Manages monitored targets, scan runs, findings with fingerprinting, and alert logs.
 """
 
+import os
 import sqlite3
 import hashlib
 from datetime import datetime
@@ -12,7 +13,7 @@ from typing import List, Dict, Any, Optional
 
 from .evidence import EvidenceLedger
 
-DB_PATH = "mhzaly_soc.db"
+DB_PATH = os.getenv("MHZALY_DB_PATH", "mhzaly_soc.db")
 
 
 def _ledger() -> EvidenceLedger:

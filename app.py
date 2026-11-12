@@ -1404,6 +1404,16 @@ def _report_finding_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _pretty_ts(value) -> str:
+    """Format SQLite/ISO timestamps for the dashboard without timezone surprises."""
+    if not value:
+        return "—"
+    text = str(value).strip().replace("T", " ")
+    if len(text) >= 16:
+        return text[:16] + " UTC"
+    return text
+
+
 def _latin(text: str) -> str:
     return str(text).encode("latin-1", "replace").decode("latin-1")
 
@@ -1652,6 +1662,13 @@ def main():
     except Exception as _db_exc:  # keep the console alive; pages surface the error clearly
         st.session_state["db_init_error"] = str(_db_exc)
 
+    if st.session_state.get("db_init_error"):
+        st.warning(
+            "Database initialisation failed: "
+            f"{st.session_state['db_init_error']}. Findings and proof pages will be limited — "
+            "make sure the app can write to its working directory, or set MHZALY_DB_PATH to a writable path."
+        )
+
     session_timeout_minutes = int(st.secrets.get("SESSION_TIMEOUT_MINUTES", DEFAULT_SESSION_TIMEOUT_MINUTES))
     if not enforce_session_timeout(session_timeout_minutes):
         return
@@ -1741,11 +1758,13 @@ def main():
             runs = db.recent_scan_runs(limit=25)
             ev_status = db.verify_evidence()
             posture = posture_mod.posture_score(findings)
+            deltas = db.delta_counters(days=30)
         except Exception as exc:
             st.error(f"Database unavailable: {exc}")
             targets, findings, runs = [], [], []
             ev_status = {"ok": False, "records": 0}
             posture = {"score": 0, "grade": "—", "drivers": []}
+            deltas = {}
 
         active_targets = [t for t in targets if t.get("active")]
         verified = [f for f in findings if f.get("verified")]
@@ -1767,8 +1786,7 @@ def main():
         d1, d2, d3, d4 = st.columns(4)
         d1.metric("Evidence records", ev_status.get("records", 0))
         d2.metric("Evidence chain", "VERIFIED" if ev_status.get("ok") else "BROKEN")
-        d3.metric("Last scan", (runs[0]["started_at"] if runs else "—"))
-        deltas = db.delta_counters(days=30)
+        d3.metric("Last scan", _pretty_ts(runs[0].get("started_at")) if runs else "—")
         d4.metric("Changes (30d)", sum(deltas.values()))
 
         if not targets:
@@ -2251,7 +2269,7 @@ except Exception as e:
                         c1.metric("VT Malicious Detections", ti_res['vt_summary']['malicious'])
                         c2.metric("Abuse Confidence Score", f"{ti_res['abuse_summary']['score']}%")
                         c3.metric("Deduplicated Unique CVEs", len(cve_res))
-                        c4.metric("Aggregate Risk Score", f"{risk['score']}/100", risk['band'])
+                        c4.metric("Aggregate Risk Score", f"{risk['score']}/100", help=f"Risk band: {risk['band']}")
 
                         subdomains = agent_result.get('subdomains', [])
                         cve_list_md = "\n".join([
@@ -3042,8 +3060,11 @@ except Exception as e:
                 "The proof pack is the audit artefact: every record, its payload, the previous hash and "
                 "its own hash. Recompute the chain independently and it should match exactly."
             )
+            import os
             import tempfile
-            pack_path = tempfile.gettempdir() + f"/mhzaly-proof-{latest_run}.json"
+
+            fd, pack_path = tempfile.mkstemp(prefix="mhzaly-proof-", suffix=".json")
+            os.close(fd)
             manifest = db.export_proof_pack(latest_run, pack_path)
             st.download_button(
                 "⬇️ Download proof pack (JSON)",
