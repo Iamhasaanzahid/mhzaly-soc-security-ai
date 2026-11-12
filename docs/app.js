@@ -1,6 +1,8 @@
 (function () {
   "use strict";
 
+  document.documentElement.classList.add("js");
+
   var nav = document.getElementById("nav");
   var menuBtn = document.getElementById("menuBtn");
   var navLinks = document.getElementById("navLinks");
