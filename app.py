@@ -1741,7 +1741,7 @@ def main():
             st.session_state.authenticated = False
             st.rerun()
         st.markdown("---")
-        st.caption("MHZALY v21.3.0 · Live operations · Proof & posture")
+        st.caption("MHZALY v21.3.1 · Live operations · Proof & posture")
         st.caption("Authorized use only — scan assets you own or have written permission to test.")
 
     if module == "Command Telemetry Center":

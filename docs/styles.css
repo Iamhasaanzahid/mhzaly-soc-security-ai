@@ -227,6 +227,10 @@ html.js .reveal.in{opacity:1;transform:none}
   .nav-links.open{display:flex;position:absolute;top:72px;left:0;right:0;background:#070b13;border-bottom:1px solid var(--line);flex-direction:column;gap:0;padding:10px 24px 18px;align-items:flex-start}
   .nav-links.open a{padding:11px 0;width:100%;border-bottom:1px solid var(--line)}
   .menu-btn{display:block}
+  /* no-JS fallback: navigation must remain reachable */
+  html:not(.js) .nav-links{display:flex;position:static;flex-direction:row;flex-wrap:wrap;gap:16px;padding:0;background:none;border:0}
+  html:not(.js) .nav-links a{padding:0;border:0;width:auto}
+  html:not(.js) .menu-btn{display:none}
   .card.wide{grid-column:auto}
 }
 @media (max-width:600px){
