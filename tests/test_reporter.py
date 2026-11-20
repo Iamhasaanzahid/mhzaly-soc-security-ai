@@ -137,3 +137,39 @@ def test_local_report_carries_evidence_reference():
          "summary": "missing HSTS", "marker": "HSTS", "details": {}},
     ], {"origin": "https://example.com", "pages": ["https://example.com"], "technologies": []})
     assert "Evidence reference" in text
+
+
+def test_local_report_explains_each_finding_end_to_end():
+    findings = [
+        {"kind": "verified_leak", "severity": "HIGH", "confidence": 90,
+         "summary": "Verified exposure: /.env", "details": {"path": "/.env"}},
+        {"kind": "weak_headers", "severity": "MEDIUM", "confidence": 88,
+         "summary": "Missing HSTS and CSP", "details": {"missing": ["HSTS", "CSP"], "grade": "D"}},
+    ]
+    text = reporter.local_report("example.com", findings, {"origin": "https://example.com",
+                                                            "pages": ["https://example.com"]})
+    for label in ("**What it is.**", "**What I observed.**", "**Why it matters.**",
+                  "**How an attacker would use it.**", "**How to fix it.**",
+                  "**How to confirm the fix.**"):
+        assert text.count(label) == 2, label
+    assert "Verified exposure: /.env" in text
+    assert "Missing HSTS and CSP" in text
+
+
+def test_local_report_has_executive_summary_and_bottom_line():
+    text = reporter.local_report("example.com", [], {"origin": "https://example.com"})
+    assert "## Executive summary" in text
+    assert "## Bottom line" in text
+    assert "Nothing survived verification" in text
+    assert "No action is required" in text
+
+
+def test_passed_checks_do_not_contradict_a_finding():
+    findings = [{"kind": "tls_expiring", "severity": "HIGH", "confidence": 86,
+                 "summary": "TLS expires soon", "details": {"days_left": 12}}]
+    inventory = {"origin": "https://example.com", "pages": ["https://example.com"],
+                 "tls": {"valid": True, "days_left": 12, "protocol": "TLSv1.2"}}
+    text = reporter.local_report("example.com", findings, inventory)
+    passed = text.split("## What passed verification")[1].split("## What could not be verified")[0]
+    assert "the certificate validated against the public trust store" not in passed
+    assert "Reachability" in passed

@@ -86,17 +86,34 @@ SYSTEM_PROMPT = (
     "versions, CVEs or exploit results — if the evidence bundle does not contain "
     "it, it does not go in the report. Prefer short paragraphs over long bullet "
     "lists, and keep remediation concrete enough that an engineer can action it "
-    "without asking a follow-up question."
+    "without asking a follow-up question. For every finding, answer the same questions in the "
+    "same order: what it is in plain language, what you actually observed, why it matters, how "
+    "an attacker would use it, how to fix it, and how the engineer can confirm the fix. Explain "
+    "an acronym the first time you use it. If a section has nothing to report, say so in one "
+    "sentence rather than filling space."
 )
 
 REPORT_SKELETON = (
     "Structure the report exactly like this, in markdown:\n"
+    "## Executive summary\n"
+    "One short paragraph: what was found, what to fix first, and the overall risk read.\n"
     "## Scope and method\n"
     "## What the assessment found\n"
     "## Findings\n"
-    "For each finding: severity, what was observed, why it matters, how to fix it.\n"
+    "For each finding use these bold labels, in this order:\n"
+    "**Severity:** … · **Confidence:** …%\n"
+    "**What it is.** …\n"
+    "**What I observed.** …\n"
+    "**Why it matters.** …\n"
+    "**How an attacker would use it.** …\n"
+    "**How to fix it.** …\n"
+    "**How to confirm the fix.** …\n"
+    "## What passed verification\n"
+    "List the checks that came back clean, briefly.\n"
     "## What could not be verified\n"
     "## Recommended order of work\n"
+    "Numbered, highest risk first, with a target timeframe.\n"
+    "## Bottom line\n"
 )
 
 
@@ -186,6 +203,22 @@ def build_messages(target: str, findings: Iterable[Dict[str, Any]],
         tls = inventory.get("tls") or {}
         if tls:
             lines.append(f"TLS: valid={tls.get('valid')} protocol={tls.get('protocol')} days_left={tls.get('days_left')}")
+        cors = inventory.get("cors") or {}
+        if cors:
+            lines.append(
+                f"CORS: risky={cors.get('risky')} reason={cors.get('reason') or cors.get('error') or 'n/a'}"
+            )
+        email = inventory.get("email_security") or {}
+        if email:
+            lines.append(
+                f"Email: managed={bool(email.get('managed'))} spf={bool(email.get('spf'))} "
+                f"dmarc={bool(email.get('dmarc'))}"
+            )
+        if inventory.get("cdn"):
+            lines.append(f"CDN in front of origin: {inventory['cdn']} (edge ports are not origin findings)")
+        robots = inventory.get("robots") or {}
+        if robots:
+            lines.append(f"robots.txt: valid={robots.get('valid')} status={robots.get('status')}")
         if inventory.get("error"):
             lines.append(f"Note: {inventory['error']}")
     lines.append("")
@@ -203,10 +236,13 @@ def _formatted_date() -> str:
 def local_report(target: str, findings: Iterable[Dict[str, Any]],
                  inventory: Optional[Dict[str, Any]] = None,
                  analyst: str = "the MHZALY assessment team") -> str:
-    """Write the report from scratch, in prose, without an LLM.
+    """Write the whole report in prose, without an LLM.
 
-    With no API key this is the document the client receives, so it has to
-    stand on its own: specific, ordered by risk, honest about gaps.
+    With no API key this is the document the client receives, so it has to stand
+    on its own: a real executive summary, every confirmed issue explained in
+    plain language (what it is, what was observed, why it matters, how it would
+    be used, how to fix it, how to prove the fix), what passed, what could not be
+    tested, and an order of work that starts with the highest-risk item.
     """
     findings = sorted(
         list(findings or []),
@@ -221,22 +257,32 @@ def local_report(target: str, findings: Iterable[Dict[str, Any]],
     tls = inventory.get("tls") or {}
     email = inventory.get("email_security") or {}
 
+    counts: Dict[str, int] = {}
+    for f in findings:
+        sev = str(f.get("severity", "INFO")).upper()
+        counts[sev] = counts.get(sev, 0) + 1
+    risk_read = _risk_read(findings)
+
     out: List[str] = []
     out.append(f"# Security Assessment — {target}")
     out.append("")
     out.append(f"Prepared by {analyst} on {_formatted_date()}.")
     out.append("")
 
+    # ── Scope ──────────────────────────────────────────────────────────────
     out.append("## Scope and method")
     out.append("")
-    out.append(
+    scope = (
         f"This was a black-box assessment of the public surface of {origin}. "
-        f"I reviewed {len(pages) or 'the root'} page(s), the TLS configuration, "
-        f"HTTP response headers, cookie attributes, CORS behaviour and the email "
-        f"authentication records for the domain. Sensitive paths were probed only "
-        f"after calibrating the host's 404 behaviour, so a catch-all page cannot be "
-        f"mistaken for a real file exposure."
+        f"I reviewed {len(pages) or 'the root'} page(s), the TLS configuration, HTTP response "
+        f"headers, cookie attributes, CORS behaviour and the email authentication records for "
+        f"the domain. Sensitive paths were probed only after calibrating the host's 404 "
+        f"behaviour, so a catch-all page cannot be mistaken for a real file exposure."
     )
+    if inventory.get("cdn"):
+        scope += (f" {inventory['cdn']} answers for this name, so edge ports and transport "
+                  "termination were treated as provider behaviour rather than findings.")
+    out.append(scope)
     if tech:
         out.append("")
         out.append(f"The host fingerprints as {', '.join(tech[:6])}.")
@@ -266,60 +312,115 @@ def local_report(target: str, findings: Iterable[Dict[str, Any]],
         )
     out.append("")
 
-    out.append("## What the assessment found")
+    # ── Executive summary ──────────────────────────────────────────────────
+    out.append("## Executive summary")
     out.append("")
-    if not findings:
+    if findings:
+        strongest = findings[0]
         out.append(
-            "Nothing survived verification. That is a meaningful result rather than "
-            "an empty one: the checks that would normally produce noise — exposed "
-            "configuration files, certificate problems, missing security headers — "
-            "either passed or could not be proven, and I have not padded the report "
-            "with maybes."
+            f"In one line: I confirmed {len(findings)} issue(s) on {origin}, and the one I would "
+            f"fix first is **{strongest.get('summary', 'the highest-severity item')}** "
+            f"({str(strongest.get('severity', 'INFO')).upper()}). My overall read is a "
+            f"**{risk_read}** risk posture."
+        )
+        out.append("")
+        out.append(
+            "Everything below is something I reproduced myself and can point to in the evidence "
+            "bundle. I have left out anything I could not prove, so the list is shorter than a "
+            "scanner's and each line should survive a conversation with your engineer. What I "
+            "checked and found clean is listed separately, because a report that only lists "
+            "problems is not an assessment."
         )
     else:
-        by_sev: Dict[str, int] = {}
-        for f in findings:
-            by_sev[f.get("severity", "INFO")] = by_sev.get(f.get("severity", "INFO"), 0) + 1
-        summary = ", ".join(f"{n} {sev.lower()}" for sev, n in by_sev.items())
         out.append(
-            f"{len(findings)} finding(s) met the evidence bar ({summary}). "
-            f"Everything else was suppressed at the verification stage, which is why "
-            f"this list is short."
+            f"In one line: I could not confirm any issue on the public surface I tested for "
+            f"{origin}. That is a real result, not an empty one — the checks that normally "
+            "generate noise either passed or could not be proven, and I have not padded the "
+            "report with theoretical risks."
+        )
+        out.append("")
+        out.append(
+            "The sections below show exactly what was tested, what the live responses showed, "
+            "and what I would look at next if you want to widen the scope."
         )
     out.append("")
 
+    # ── Summary of findings ────────────────────────────────────────────────
+    out.append("## What the assessment found")
+    out.append("")
+    if findings:
+        summary = ", ".join(f"{counts[s]} {s.lower()}" for s in
+                            ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO") if counts.get(s))
+        out.append(
+            f"{len(findings)} finding(s) met the evidence bar ({summary}). They are explained one "
+            "by one in the next section. For each one I answer the same questions: what it is, "
+            "what I actually saw, why it matters, how an attacker would use it, how to fix it, "
+            "and how to prove the fix worked."
+        )
+    else:
+        out.append(
+            "Nothing survived verification. That is a meaningful result rather than an empty "
+            "one: the checks that would normally produce noise — exposed configuration files, "
+            "certificate problems, missing security headers — either passed or could not be "
+            "proven, and I have not padded the report with maybes."
+        )
+    out.append("")
+
+    # ── Findings, in full ──────────────────────────────────────────────────
     out.append("## Findings")
     out.append("")
     if findings:
         for idx, f in enumerate(findings, start=1):
             sev = str(f.get("severity", "INFO")).upper()
             conf = f.get("confidence", "?")
+            kind = str(f.get("kind") or "")
             out.append(f"### {idx}. {f.get('summary', 'Finding')}")
             out.append("")
             out.append(f"**Severity:** {sev} · **Confidence:** {conf}%")
             out.append("")
-            details = f.get("details") or {}
-            observation = details.get("evidence_snippet") or ""
-            if observation:
-                out.append(f"What I observed: `{observation}`")
-                out.append("")
-            from .evidence import fingerprint_of
-            fp = fingerprint_of(target, str(f.get("kind") or ""), str(f.get("marker") or ""),
-                                str(f.get("summary") or ""), str(f.get("severity") or ""))
-            out.append(f"Evidence reference: `{fp[:16]}…`")
+            out.append(f"**What it is.** {_plain_for(kind)}")
+            out.append("")
+            out.append(f"**What I observed.** {_observed_for(f, inventory)}")
             out.append("")
             impact = _impact_for(f)
             if impact:
-                out.append(impact)
+                out.append(f"**Why it matters.** {impact}")
+                out.append("")
+            exploit = _exploit_for(kind)
+            if exploit:
+                out.append(f"**How an attacker would use it.** {exploit}")
                 out.append("")
             fix = _fix_for(f)
             if fix:
-                out.append(fix)
+                out.append(f"**How to fix it.** {fix}")
                 out.append("")
+            verify = _verify_fix_for(kind)
+            if verify:
+                out.append(f"**How to confirm the fix.** {verify}")
+                out.append("")
+            from .evidence import fingerprint_of
+            fp = fingerprint_of(target, kind, str(f.get("marker") or ""),
+                                str(f.get("summary") or ""), str(f.get("severity") or ""))
+            out.append(f"Evidence reference: `{fp[:16]}…`")
+            out.append("")
     else:
         out.append("No findings.")
         out.append("")
 
+    # ── What passed ────────────────────────────────────────────────────────
+    passed = _passed_checks(inventory, findings)
+    if passed:
+        out.append("## What passed verification")
+        out.append("")
+        out.append(
+            "These are not filler. They are the checks I ran that came back clean, so you can "
+            "see the full picture and know what a future regression would look like."
+        )
+        out.append("")
+        out.extend(f"- {line}" for line in passed)
+        out.append("")
+
+    # ── Gaps ───────────────────────────────────────────────────────────────
     out.append("## What could not be verified")
     out.append("")
     gaps = []
@@ -332,25 +433,215 @@ def local_report(target: str, findings: Iterable[Dict[str, Any]],
                     + str(tls.get("error") or "certificate did not validate"))
     if not email:
         gaps.append("email authentication records were not checked")
-    gaps.append("I did not test authentication bypass, injection or business-logic flaws; those need an authenticated scope and explicit written authorisation")
+    gaps.append("I did not test authentication bypass, injection or business-logic flaws; those "
+                "need an authenticated scope and explicit written authorisation")
     out.extend(f"- {g}" for g in gaps)
     out.append("")
 
+    # ── Order of work ──────────────────────────────────────────────────────
     out.append("## Recommended order of work")
     out.append("")
     if findings:
-        order = []
-        for f in findings:
-            order.append(f"- **{f.get('severity', 'INFO')}** — {_fix_short(f)}")
-        out.extend(order[:8])
+        out.append("The order below is by risk and by how cheap the fix is, not by the order the "
+                   "scanner found them.")
+        out.append("")
+        for i, f in enumerate(findings[:8], start=1):
+            sev = str(f.get("severity", "INFO")).upper()
+            effort = _EFFORT.get(sev, "when convenient")
+            out.append(f"{i}. **{sev} — {f.get('summary', '')}.** "
+                       f"{_fix_short(f).capitalize()}. Target: {effort}.")
     else:
-        out.append("- Keep the current header and certificate posture; re-test after any infrastructure change.")
+        out.append("- Keep the current header and certificate posture; re-test after any "
+                   "infrastructure change.")
+    out.append("")
+
+    # ── Bottom line ────────────────────────────────────────────────────────
+    out.append("## Bottom line")
+    out.append("")
+    if findings:
+        out.append(
+            f"If you fix only one thing, fix **{findings[0].get('summary', 'the highest-severity item')}**. "
+            "Then work down the list above. Re-run the assessment after the fixes and compare the "
+            "results; anything that disappears should be recorded as resolved, not quietly forgotten."
+        )
+    else:
+        out.append(
+            "No action is required from this assessment. Keep the current header and certificate "
+            "posture, and re-run after any change to the edge, DNS or deployment pipeline. The "
+            "next run will compare against this baseline."
+        )
     out.append("")
     out.append(
         f"Evidence bundle: {len(findings)} verified finding(s), "
         f"{len(pages)} page(s) reviewed, header grade {headers.get('grade', 'n/a')}."
     )
     return humanize("\n".join(out))
+
+
+_EFFORT: Dict[str, str] = {
+    "CRITICAL": "today",
+    "HIGH": "today",
+    "MEDIUM": "this sprint",
+    "LOW": "the next maintenance window",
+    "INFO": "when convenient",
+}
+
+_PLAIN: Dict[str, str] = {
+    "verified_leak": "A file that should never be public is being served from the web root. These files usually contain credentials, keys or internal configuration.",
+    "weak_headers": "A set of HTTP response headers tells the browser how to behave safely: force HTTPS, block injected script, stop the page being framed. One or more are missing.",
+    "insecure_cookie": "A session cookie is missing an attribute that stops it being read by script, sent over plain HTTP, or attached to cross-site requests.",
+    "tls_expired": "The TLS certificate the server presents is past its validity date.",
+    "tls_untrusted": "The certificate does not chain to a public trust store or does not match the hostname, so a browser cannot tell it apart from an interception proxy.",
+    "tls_expiring": "The certificate is still valid but close enough to expiry that renewal needs to be scheduled now.",
+    "tls_weak_protocol": "The server still negotiates a TLS version with known cryptographic weaknesses.",
+    "email_dmarc_missing": "DMARC tells receiving mail servers what to do when someone forges this domain. Without it, receivers have no policy to enforce.",
+    "email_spf_missing": "SPF lists the servers allowed to send mail for this domain. Without it, anyone can put this domain in an envelope sender.",
+    "email_dmarc_weak": "DMARC is published but only in monitor mode, so forged mail is observed rather than rejected.",
+    "cors_wildcard": "Cross-Origin Resource Sharing decides which other sites may read this site's responses. A wildcard policy is too open when credentials are involved.",
+    "cors_reflection": "The server echoes back whatever Origin the caller sends, which lets an attacker-controlled page read responses in a victim's browser.",
+    "open_port": "A TCP service is reachable from the public internet. Whether that is a problem depends on what the service is.",
+    "risky_port": "A service that normally belongs on an internal network is reachable from the internet.",
+}
+
+_EXPLOIT: Dict[str, str] = {
+    "verified_leak": "Fetch the path directly, with no authentication, and read whatever it contains. The first thing an attacker does with a leaked `.env` or `.git/config` is reuse the keys against the cloud account or the database.",
+    "weak_headers": "Combine the missing control with any reflection point on the site. Without CSP an injected script runs with the site's privileges; without HSTS a network attacker can downgrade the first request.",
+    "insecure_cookie": "Read the cookie with an XSS payload, or replay it over HTTP on a hostile network, then use the session as the victim.",
+    "tls_expired": "Present any certificate from a hostile network and rely on the user having been trained to click through the warning.",
+    "tls_untrusted": "Intercept the connection from a network position and present a certificate the client cannot distinguish from the real one.",
+    "tls_expiring": "Wait for the renewal to be missed; on expiry the site becomes an interception target and some clients stop connecting altogether.",
+    "tls_weak_protocol": "Force a downgrade to the legacy protocol and attack the known weaknesses in its cipher suite.",
+    "email_dmarc_missing": "Send phishing mail that claims to come from this domain. Without a rejecting DMARC policy, many receivers will deliver it.",
+    "email_spf_missing": "Spoof the envelope sender from any host, which is the standard first step in a business-email-compromise campaign.",
+    "email_dmarc_weak": "Send forged mail knowing the policy only reports it; delivery is still likely on many receivers.",
+    "cors_wildcard": "Host a page on any domain; the browser lets it read the authenticated response if credentials are allowed, then exfiltrates the data.",
+    "cors_reflection": "Send the victim a link to the attacker's page; script on that page calls the API and reads the response because the server echoed the attacker's Origin.",
+    "open_port": "Fingerprint the service, check its version against public advisories, and use it as a second entry point if the web tier is hardened.",
+    "risky_port": "Go straight at the management or database service with default or reused credentials, bypassing the web application entirely.",
+}
+
+_VERIFY_FIX: Dict[str, str] = {
+    "verified_leak": "Request the same path from outside and confirm a 404 or an authentication challenge with no sensitive body content. Rotate the secrets regardless — assume they were read.",
+    "weak_headers": "Re-fetch the document response and confirm each header is present with the intended value; the header grade in the next scan is the regression check.",
+    "insecure_cookie": "Inspect `Set-Cookie` on a fresh login and confirm Secure, HttpOnly and SameSite are all present, including after the CDN.",
+    "tls_expired": "Reconnect and confirm the chain validates with no warning, then confirm the expiry date and that renewal alerting is wired.",
+    "tls_untrusted": "Reconnect with a verifying client and confirm hostname and chain both validate.",
+    "tls_expiring": "Confirm the new certificate is deployed and the expiry date has moved out.",
+    "tls_weak_protocol": "Reconnect offering only TLS 1.0/1.1 and confirm the handshake is refused.",
+    "email_dmarc_missing": "Query `_dmarc.<domain>` TXT and confirm the policy record is returned; send from an unauthorised sender and confirm rejection or quarantine.",
+    "email_spf_missing": "Query the domain TXT records and confirm a single valid `v=spf1` record under ten DNS lookups.",
+    "email_dmarc_weak": "Confirm the policy has moved to `p=quarantine` or `p=reject` and that a test forgery is not delivered.",
+    "cors_wildcard": "Re-run the synthetic Origin probe and confirm the response returns a fixed allow-listed origin, never `*` with credentials.",
+    "cors_reflection": "Re-run the probe from two unrelated origins and confirm neither is echoed back.",
+    "open_port": "Re-run the port check from outside the network and confirm the port is closed or filtered.",
+}
+
+
+def _risk_read(findings: List[Dict[str, Any]]) -> str:
+    severities = {str(f.get("severity", "")).upper() for f in findings}
+    if "CRITICAL" in severities:
+        return "critical"
+    if "HIGH" in severities:
+        return "high"
+    if "MEDIUM" in severities:
+        return "moderate"
+    if "LOW" in severities:
+        return "low"
+    return "clean"
+
+
+def _plain_for(kind: str) -> str:
+    return _PLAIN.get(kind, "A configuration issue that affects how the site behaves under attack.")
+
+
+def _exploit_for(kind: str) -> str:
+    return _EXPLOIT.get(kind, "")
+
+
+def _verify_fix_for(kind: str) -> str:
+    return _VERIFY_FIX.get(kind, "")
+
+
+def _observed_for(finding: Dict[str, Any], inventory: Dict[str, Any]) -> str:
+    """State the evidence in one human sentence, using the live inventory when useful."""
+    details = finding.get("details") or {}
+    kind = str(finding.get("kind") or "")
+    snippet = details.get("evidence_snippet") or details.get("evidence")
+    if isinstance(snippet, str) and snippet.strip():
+        return f"The response contained `{snippet.strip()[:300]}`."
+    if kind == "weak_headers":
+        missing = details.get("missing") or (inventory.get("headers") or {}).get("missing") or []
+        grade = details.get("grade") or (inventory.get("headers") or {}).get("grade")
+        head = (f"The live document response omitted {', '.join(missing)}"
+                if missing else "The live document response was missing part of the graded header set")
+        return head + (f" (header grade {grade})." if grade else ".")
+    if kind == "verified_leak":
+        path = details.get("path") or "the reported path"
+        return (f"I requested `{path}` and the body matched the expected sensitive-file signature, "
+                "so this is not a soft-404.")
+    if kind in {"tls_expired", "tls_untrusted", "tls_expiring", "tls_weak_protocol"}:
+        tls = inventory.get("tls") or {}
+        parts = []
+        if tls.get("days_left") is not None:
+            parts.append(f"{tls['days_left']} day(s) to expiry")
+        if tls.get("protocol"):
+            parts.append(str(tls["protocol"]))
+        if tls.get("error"):
+            parts.append(str(tls["error"]))
+        if parts:
+            return "The certificate handshake showed " + ", ".join(parts) + "."
+        return str(finding.get("summary") or "The certificate check failed") + "."
+    if kind in {"cors_wildcard", "cors_reflection"}:
+        acao = details.get("acao") or "an arbitrary origin"
+        cred = " with credentials enabled" if details.get("allow_credentials") else ""
+        return (f"The server answered the synthetic Origin probe with "
+                f"`Access-Control-Allow-Origin: {acao}`{cred}.")
+    if kind in {"open_port", "risky_port"}:
+        port = details.get("port", "the reported")
+        service = details.get("service") or "unknown service"
+        return f"TCP/{port} accepted a connection from the assessment host ({service})."
+    if kind in {"email_spf_missing", "email_dmarc_missing", "email_dmarc_weak"}:
+        return "A DNS TXT lookup for the domain and `_dmarc` returned no usable policy record."
+    if kind == "insecure_cookie":
+        return "The `Set-Cookie` response lacked one or more of Secure, HttpOnly and SameSite."
+    return f"The check reproduced on a second request: {finding.get('summary', '')}."
+
+
+def _passed_checks(inventory: Dict[str, Any], findings: List[Dict[str, Any]]) -> List[str]:
+    """Checks that came back clean — the other half of an assessment.
+
+    A check is only "passed" if no confirmed finding covers the same area; a
+    valid-but-expiring certificate is not a clean TLS result.
+    """
+    kinds = {str(f.get("kind") or "") for f in findings}
+    passed: List[str] = []
+    pages = inventory.get("pages") or []
+    if pages:
+        passed.append(f"Reachability — the site root answered on HTTPS and "
+                      f"{len(pages)} page(s) were reviewed.")
+    tls = inventory.get("tls") or {}
+    if tls.get("valid") and not any(k.startswith("tls_") for k in kinds):
+        passed.append(f"TLS — the certificate validated against the public trust store "
+                      f"({tls.get('days_left', '?')} day(s) to expiry, "
+                      f"{tls.get('protocol', 'modern TLS')}).")
+    headers = inventory.get("headers") or {}
+    if (headers.get("grade") and not headers.get("missing")
+            and "weak_headers" not in kinds):
+        passed.append(f"Security headers — grade {headers['grade']}; every header I grade for "
+                      "was present on the live document response.")
+    cors = inventory.get("cors") or {}
+    if (cors and not cors.get("error") and not cors.get("risky")
+            and not any(k.startswith("cors_") for k in kinds)):
+        passed.append("CORS — the server did not reflect an arbitrary Origin and did not pair a "
+                      "wildcard with credentials.")
+    email = inventory.get("email_security") or {}
+    email_finding = any(k.startswith("email_") for k in kinds)
+    if email.get("managed") and not email_finding:
+        passed.append("Email — the DNS zone is provider-managed, so SPF/DMARC were excluded from "
+                      "the client-actionable scope.")
+    elif email.get("spf") and email.get("dmarc") and not email_finding:
+        passed.append("Email — both SPF and DMARC records are published.")
+    return passed
 
 
 def _impact_for(finding: Dict[str, Any]) -> str:
@@ -558,7 +849,7 @@ def generate_council_report(target: str, findings: List[Dict[str, Any]],
             final_text = call_groq(groq_key, [
                 {"role": "system", "content": COUNCIL_SYSTEM},
                 {"role": "user", "content": user_content},
-            ], max_tokens=2200, temperature=0.3)
+            ], max_tokens=3200, temperature=0.3)
             synthesized = bool(final_text)
         except Exception:
             synthesized = False
@@ -590,7 +881,7 @@ def generate_report(target: str, findings: Iterable[Dict[str, Any]],
         try:
             from .advanced_features import call_groq  # local import avoids a cycle
             messages = build_messages(target, findings, inventory, audience)
-            text = call_groq(groq_key, messages, max_tokens=2200, temperature=0.35)
+            text = call_groq(groq_key, messages, max_tokens=3200, temperature=0.35)
             if text:
                 source = "AI report, human-voice pass"
         except Exception:  # pragma: no cover - network/LLM failures are expected

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MHZALY — AUTONOMOUS SOC & ATTACK-SURFACE INTELLIGENCE v21.4.0 - OPERATOR CONSOLE EDITION
+MHZALY — AUTONOMOUS SOC & ATTACK-SURFACE INTELLIGENCE v21.5.0 - OPERATOR CONSOLE EDITION
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Comprehensive Purple Team Operations Suite (Red Team Recon + Blue Team SOC Automation)
 Author: Muhammad Hassaan Zahid
@@ -1828,7 +1828,7 @@ def main():
             "background:linear-gradient(135deg,#0b1220,#111827);margin-bottom:12px;'>"
             "<div style='font-size:11px;letter-spacing:.18em;color:#60a5fa;text-transform:uppercase;'>MHZALY</div>"
             "<div style='font-size:20px;font-weight:700;color:#f9fafb;line-height:1.2;'>Security Operations</div>"
-            "<div style='font-size:11px;color:#9ca3af;margin-top:4px;'>Proof-carrying console · v21.4.0</div>"
+            "<div style='font-size:11px;color:#9ca3af;margin-top:4px;'>Proof-carrying console · v21.5.0</div>"
             "</div>",
             unsafe_allow_html=True,
         )
@@ -1862,7 +1862,7 @@ def main():
             st.session_state.authenticated = False
             st.rerun()
         st.markdown("---")
-        st.caption("MHZALY v21.4.0 · Evidence-only reporting · Proof & posture")
+        st.caption("MHZALY v21.5.0 · Humanized evidence reports · Proof & posture")
         st.caption("Authorized use only — scan assets you own or have written permission to test.")
 
     if module == "Command Telemetry Center":

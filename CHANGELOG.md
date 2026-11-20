@@ -1,3 +1,24 @@
+## [21.5.0] — 2026-11-20
+
+**Fully humanized reports, including with no API key.** The zero-key narrative
+is now a complete consultant-style document rather than a list of findings.
+
+### Added
+
+- An **Executive summary** and **Bottom line** in every local report: the
+  overall risk read, the issue to fix first, and what happens if nothing is done.
+- Every confirmed finding is explained in full, in the same order a consultant
+  would use: what it is in plain language, what was actually observed, why it
+  matters, how an attacker would use it, how to fix it, and how to prove the fix
+  worked.
+- A **What passed verification** section: the checks that came back clean,
+  filtered so a clean item never contradicts a finding in the same area (for
+  example, a valid certificate close to expiry is not listed as a pass).
+- A **Recommended order of work** numbered by risk with a realistic target
+  timeframe, plus an explicit statement of what could not be tested.
+- AI prompts now require the same per-finding structure and receive the live
+  TLS/header/CORS/email/CDN context, so the Groq path matches the local one.
+
 ## [21.4.0] — 2026-11-20
 
 **Evidence-only findings.** A scan is a snapshot; a report must describe the
