@@ -38,6 +38,7 @@ BASE_SCORES: Dict[str, int] = {
     "weak_headers": 88,         # consolidated, not one point per header
     "insecure_cookie": 84,
     "cors_wildcard": 86,
+    "cors_reflection": 72,
     "email_spf_missing": 80,
     "email_dmarc_missing": 82,
     "email_dmarc_weak": 76,

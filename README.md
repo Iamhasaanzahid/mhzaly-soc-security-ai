@@ -9,7 +9,7 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-3776AB?logo=python&logoColor=white)](pyproject.toml)
 [![Streamlit](https://img.shields.io/badge/streamlit-1.28%2B-FF4B4B?logo=streamlit&logoColor=white)](https://streamlit.io)
 [![Tests](https://img.shields.io/badge/tests-110%20passing-brightgreen)](tests)
-[![Version](https://img.shields.io/badge/version-21.3.1-blueviolet)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-21.4.0-blueviolet)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 </div>
@@ -50,6 +50,7 @@ remains is a short list an engineer can act on and a consultant can sign.
 | **AI Security Engineer** | One target in, one verified assessment out: recon, technology fingerprinting, header audit, CPE-confirmed CVE matching, attack-surface map, analyst write-up |
 | **Client Report Studio** | Signed, proof-carrying client document from verified findings: posture, remediation order, delta, evidence-chain statement, Markdown/PDF export |
 | **Verified Web Surface** | Header grading, cookie-flag analysis, certificate validation, CORS, bounded same-origin crawl, robots/sitemap mining, SPF/DMARC, dangling-CNAME takeover checks |
+| **Live Re-verification** | Before a report is written, every stored finding is re-checked against the live target and labelled **reproduced / resolved / not applicable / unverifiable**. Fixed issues appear as progress, never as open risk |
 | **Precision Gate** | Scores every candidate 0–100, de-duplicates across runs, enforces a confidence floor (default 70) and severity floor (default MEDIUM) |
 | **Human Council Reports** | Four perspectives — consultant, red team, blue team and a skeptic who challenges the confidence — arbitrated into one executive assessment; deterministic local narrative when no LLM key is configured |
 | **Autonomous SOC** | Cron-driven monitoring every 30 minutes, fingerprint-level de-duplication, Discord alerting with 429 back-off, persistent state committed back to the repo |
@@ -109,6 +110,9 @@ Three rules drive the design:
    assessment; they are not vulnerabilities and never inflate the count.
 3. **Silence is a result.** If nothing survives verification, the report says so plainly instead of
    padding the page.
+4. **Context is not a vulnerability.** Edge ports on a CDN, SPF/DMARC on a provider-owned zone and a
+   public `Access-Control-Allow-Origin: *` without credentials are recorded as context — not reported
+   as the customer's risk.
 
 ---
 

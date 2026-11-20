@@ -58,6 +58,90 @@ SECURITY_HEADERS: Dict[str, Tuple[int, str]] = {
     "permissions-policy": (5, "Permissions-Policy"),
 }
 
+#: Platform-managed hosting zones. The customer cannot publish SPF/DMARC for
+#: these suffixes — the provider owns the apex and the DNS zone — so a missing
+#: record is informational, never a client-actionable finding.
+MANAGED_DOMAIN_SUFFIXES: Tuple[str, ...] = (
+    "pages.dev", "workers.dev", "netlify.app", "vercel.app", "now.sh",
+    "github.io", "gitlab.io", "herokuapp.com", "azurewebsites.net",
+    "cloudapp.azure.com", "web.app", "firebaseapp.com", "appspot.com",
+    "onrender.com", "fly.dev", "up.railway.app", "railway.app", "glitch.me",
+    "surge.sh", "readthedocs.io", "streamlit.app", "repl.co", "replit.app",
+    "ngrok.io", "ngrok.app", "trycloudflare.com", "vercel.sh", "pages.github.io",
+)
+
+#: Ports that a CDN proxy legitimately accepts on behalf of the origin. Seeing
+#: them open on a CDN edge IP says nothing about the customer's server.
+CDN_EDGE_PORTS = frozenset({80, 443, 8080, 8443, 2052, 2053, 2082, 2083,
+                            2086, 2087, 2095, 2096})
+
+CORS_PROBE_ORIGIN = "https://mhzaly-cors-probe.invalid"
+
+
+def is_managed_domain(host: str) -> bool:
+    """True when the DNS zone is controlled by a hosting platform."""
+    name = (host or "").strip().lower().rstrip(".")
+    return any(name == suffix or name.endswith("." + suffix)
+               for suffix in MANAGED_DOMAIN_SUFFIXES)
+
+
+def detect_cdn(headers: Dict[str, str]) -> Optional[str]:
+    """Identify a CDN/edge provider from response headers, if any."""
+    lower = {str(k).lower(): str(v).lower() for k, v in (headers or {}).items()}
+    server = lower.get("server", "")
+    via = lower.get("via", "")
+    if "cf-ray" in lower or "cloudflare" in server:
+        return "Cloudflare"
+    if "x-amz-cf-id" in lower or "cloudfront" in server + via:
+        return "Amazon CloudFront"
+    if "x-fastly-request-id" in lower or "fastly" in server:
+        return "Fastly"
+    if "x-nf-request-id" in lower or "netlify" in server:
+        return "Netlify"
+    if "x-vercel-cache" in lower or "vercel" in server:
+        return "Vercel"
+    if "x-github-request-id" in lower or "github.com" in server:
+        return "GitHub Pages"
+    if "x-azure-ref" in lower or "azure" in server:
+        return "Azure Front Door"
+    if "x-served-by" in lower and "cache" in lower.get("x-cache", ""):
+        return "CDN edge"
+    return None
+
+
+def assess_cors(headers: Dict[str, str], probe_origin: str = CORS_PROBE_ORIGIN) -> Dict[str, Any]:
+    """Grade CORS on what actually creates risk, not on a bare `*`.
+
+    A wildcard without credentials is how public, cacheable assets are served;
+    it is not a vulnerability. Reflection of an arbitrary origin, or a wildcard
+    combined with credentials, is a real misconfiguration.
+    """
+    lower = {str(k).lower(): str(v).strip() for k, v in (headers or {}).items()}
+    acao = lower.get("access-control-allow-origin", "")
+    acac = lower.get("access-control-allow-credentials", "").lower() == "true"
+    reflects = bool(acao) and acao == probe_origin
+    wildcard = acao == "*"
+    if wildcard and acac:
+        return {"acao": acao, "allow_credentials": acac, "risky": True, "severity": "HIGH",
+                "misconfigured": True, "checked": True,
+                "reason": "wildcard origin combined with credentials"}
+    if reflects and acac:
+        return {"acao": acao, "allow_credentials": acac, "risky": True, "severity": "HIGH",
+                "misconfigured": True, "checked": True,
+                "reason": "reflects an arbitrary Origin with credentials enabled"}
+    if reflects:
+        return {"acao": acao, "allow_credentials": acac, "risky": True, "severity": "LOW",
+                "misconfigured": True, "checked": True,
+                "reason": "reflects an arbitrary Origin (no credentials)"}
+    if wildcard:
+        return {"acao": acao, "allow_credentials": acac, "risky": False, "severity": None,
+                "misconfigured": False, "checked": True,
+                "reason": "public wildcard without credentials — informational, not a vulnerability"}
+    return {"acao": acao or None, "allow_credentials": acac, "risky": False, "severity": None,
+            "misconfigured": False, "checked": True,
+            "reason": "no permissive CORS policy observed"}
+
+
 #: Bodies that look like an exposed file. Each entry: path -> (regex, label).
 LEAK_SIGNATURES: Dict[str, Tuple[str, str]] = {
     "/.env": (r"(?m)^\s*[A-Z0-9_]{3,}\s*=\s*\S+", "environment file with KEY=VALUE pairs"),
@@ -86,9 +170,11 @@ def make_session(timeout: int = 8) -> requests.Session:
     return s
 
 
-def _get(session: requests.Session, url: str, timeout: int = 8) -> Optional[requests.Response]:
+def _get(session: requests.Session, url: str, timeout: int = 8,
+         headers: Optional[Dict[str, str]] = None) -> Optional[requests.Response]:
     try:
-        return session.get(url, timeout=timeout, allow_redirects=True, verify=False)
+        return session.get(url, timeout=timeout, allow_redirects=True,
+                           verify=False, headers=headers)
     except requests.RequestException:
         return None
 
@@ -515,15 +601,26 @@ def well_known_paths(session: requests.Session, origin: str) -> List[str]:
     """Mine robots.txt and sitemap.xml for real, hinted paths."""
     paths: List[str] = []
     robots = _get(session, origin + "/robots.txt")
-    if robots is not None and robots.status_code == 200:
-        for line in (robots.text or "").splitlines():
+    robots_body = (robots.text or "") if robots is not None else ""
+    robots_is_real = bool(
+        robots is not None and robots.status_code == 200
+        and "<html" not in robots_body[:300].lower()
+        and re.search(r"(?mi)^\s*(user-agent|disallow|allow)\s*:", robots_body)
+    )
+    if robots_is_real:
+        for line in robots_body.splitlines():
             if line.lower().startswith(("disallow:", "allow:")):
                 value = line.split(":", 1)[1].strip()
                 if value and value != "/" and not value.startswith("*"):
                     paths.append(value if value.startswith("/") else "/" + value)
     sitemap = _get(session, origin + "/sitemap.xml")
-    if sitemap is not None and sitemap.status_code == 200:
-        paths.extend(re.findall(r"<loc>([^<]+)</loc>", sitemap.text or "")[:50])
+    sitemap_body = (sitemap.text or "") if sitemap is not None else ""
+    sitemap_is_real = bool(
+        sitemap is not None and sitemap.status_code == 200
+        and ("<urlset" in sitemap_body or "<sitemapindex" in sitemap_body)
+    )
+    if sitemap_is_real:
+        paths.extend(re.findall(r"<loc>([^<]+)</loc>", sitemap_body)[:50])
     return list(dict.fromkeys(paths))[:50]
 
 
@@ -538,7 +635,7 @@ def scan_web(host: str, options: Optional[Dict[str, Any]] = None) -> Dict[str, A
     options = options or {}
     origin = origin_of(host)
     findings: List[Dict[str, Any]] = []
-    inventory: Dict[str, Any] = {"origin": origin, "pages": [], "technologies": []}
+    inventory: Dict[str, Any] = {"origin": origin, "pages": [], "technologies": [], "notes": []}
     if not origin:
         return {"findings": findings, "inventory": inventory}
 
@@ -582,6 +679,12 @@ def scan_web(host: str, options: Optional[Dict[str, Any]] = None) -> Dict[str, A
     header_analysis = grade_security_headers(headers)
     inventory["headers"] = header_analysis
     inventory["technologies"] = fingerprint_technologies(headers, home.text or "")
+    inventory["cdn"] = detect_cdn(headers)
+    if inventory["cdn"]:
+        inventory["notes"].append(
+            f"{inventory['cdn']} edge detected — open 80/443/8080/8443 on the edge IP is "
+            "proxy behaviour, not evidence about the origin server."
+        )
 
     if header_analysis["score"] < 60 and header_analysis["missing"]:
         findings.append(_finding(
@@ -611,11 +714,23 @@ def scan_web(host: str, options: Optional[Dict[str, Any]] = None) -> Dict[str, A
             {"verified": True}, True,
         ))
 
-    # 4. CORS
-    if headers.get("access-control-allow-origin") == "*":
-        findings.append(_finding("cors_wildcard", "CORS", "MEDIUM",
-                                 "Access-Control-Allow-Origin is a wildcard",
-                                 "cors:*", {"value": "*"}, {"verified": True}, True))
+    # 4. CORS — probe with a synthetic Origin so reflection is observable.
+    cors_resp = _get(session, origin, headers={"Origin": CORS_PROBE_ORIGIN})
+    cors = assess_cors(dict(cors_resp.headers) if cors_resp is not None else headers)
+    inventory["cors"] = cors
+    if cors.get("risky") and cors.get("severity"):
+        kind = "cors_wildcard" if cors.get("acao") == "*" else "cors_reflection"
+        findings.append(_finding(
+            kind, "CORS", cors["severity"],
+            f"CORS {cors['reason']}",
+            f"cors:{cors.get('acao')}:{cors.get('allow_credentials')}",
+            cors, {"verified": True, "double_checked": True}, True,
+        ))
+    elif cors.get("acao") == "*":
+        inventory["notes"].append(
+            "CORS allows * without credentials on the public surface — required for cacheable "
+            "assets, not a finding."
+        )
 
     # 5. Sensitive paths, calibrated against soft-404 behaviour
     baseline = soft_404_baseline(session, origin)
@@ -639,7 +754,14 @@ def scan_web(host: str, options: Optional[Dict[str, Any]] = None) -> Dict[str, A
     domain = urllib.parse.urlparse(origin).hostname or host
     email = check_email_security(domain)
     inventory["email_security"] = email
-    if not email.get("spf") or not email.get("dmarc"):
+    if is_managed_domain(domain):
+        email["managed"] = True
+        email["note"] = (
+            "DNS zone is owned by the hosting platform; SPF/DMARC are the provider's "
+            "responsibility and cannot be published by the customer."
+        )
+        inventory["notes"].append(email["note"])
+    elif not email.get("spf") or not email.get("dmarc"):
         missing = []
         if not email.get("spf"):
             missing.append("SPF")

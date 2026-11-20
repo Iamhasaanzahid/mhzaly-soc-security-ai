@@ -17,9 +17,9 @@ RUBRIC: List[Dict[str, Any]] = [
     {"factor": "verified_exposure", "weight": 30, "kinds": ["verified_leak"]},
     {"factor": "headers", "weight": 20, "kinds": ["weak_headers"]},
     {"factor": "transport_security", "weight": 15, "kinds": ["tls_weak_protocol", "tls_untrusted", "tls_expiring", "tls_expired"]},
-    {"factor": "cookie_and_cors", "weight": 10, "kinds": ["insecure_cookie", "cors_wildcard"]},
+    {"factor": "cookie_and_cors", "weight": 10, "kinds": ["insecure_cookie", "cors_wildcard", "cors_reflection"]},
     {"factor": "email_auth", "weight": 10, "kinds": ["email_dmarc_missing", "email_spf_missing"]},
-    {"factor": "exposure_surface", "weight": 15, "kinds": ["open_port", "risky_port", "cors_wildcard"]},
+    {"factor": "exposure_surface", "weight": 15, "kinds": ["open_port", "risky_port", "cors_wildcard", "cors_reflection"]},
 ]
 
 

@@ -1,3 +1,41 @@
+## [21.4.0] — 2026-11-20
+
+**Evidence-only findings.** A scan is a snapshot; a report must describe the
+target as it is now. This release removes every known source of false positives
+and re-verifies stored findings before a report is written.
+
+### Fixed
+
+- **CORS:** a bare `*` without credentials is no longer a finding. Public
+  cacheable assets are served that way by design. Only a wildcard or reflected
+  origin with credentials, or arbitrary origin reflection, is reported — with
+  the exact mechanism in the evidence.
+- **CDN edge ports:** when Cloudflare, CloudFront, Fastly, Netlify, Vercel or
+  GitHub Pages answers for the host, the port sweep is skipped and the edge is
+  labelled. 80/443 are never findings. This removes the false "8080/8443 open"
+  class of report noise.
+- **Provider-managed DNS:** on `pages.dev`, `workers.dev`, `netlify.app`,
+  `vercel.app`, `github.io` and similar suffixes, missing SPF/DMARC is marked
+  *not applicable* — the customer cannot publish those records.
+- **TLS:** the legacy AI-engine audit no longer disables certificate
+  verification (`CERT_NONE`); it uses the browser-grade check and reports the
+  real trust error, if any.
+- **Headers:** graded from one verified fetch of the canonical HTTPS document,
+  with `headers_checked` recorded. An unreachable host can no longer produce
+  "missing headers".
+- **robots.txt / sitemap:** parsed only when the response is a real crawler
+  file, never when an SPA returns its HTML fallback.
+
+### Added
+
+- `core/verify.py` — live re-verification. Every stored finding is labelled
+  **reproduced / resolved / not applicable / unverified** against the current
+  target before a report is generated.
+- Client Report Studio now shows the live re-check line, lists resolved items
+  as progress, and writes the report only from findings that still reproduce.
+- `cors_reflection` is handled across confidence scoring, posture and
+  remediation guidance.
+
 ## [21.3.1] — 2026-11-12
 
 **Operational hardening.** Shipping what a real deployment needs, and removing

@@ -223,16 +223,28 @@ def run_scan_cycle(target: str, target_id: int, cfg: dict):
         return
 
     try:
-        # 1. Deterministic network facts (always run)
+        # 1. Verified web-surface hunt first (headers, cookies, TLS, CORS,
+        #    exposed files with signature checks, crawl inventory, email auth).
+        #    It also tells us whether a CDN answers for this name.
+        web = hunter.scan_web(host, {"max_pages": cfg.get("web_surface_max_pages", 15)})
+        inventory = web.get("inventory", {})
+        cdn = inventory.get("cdn")
+
+        # 2. Deterministic network facts. A CDN edge answers 80/443/8080/8443 on
+        #    the origin's behalf, so sweeping it produces port findings that are
+        #    not attributable to the customer. Skip the sweep entirely rather
+        #    than report the provider's proxy ports.
         dns_data = c.check_dns(host)  # inventory only, surfaced in logs
-        ports = c.scan_ports(host)
+        ports = [] if cdn else c.scan_ports(host)
         risky = {21, 25, 445, 1433, 3306, 3389, 5432, 9200}
         for p in ports:
+            if p["port"] in {80, 443}:
+                continue  # expected for a web target — not a finding
             is_risky = p["port"] in risky
             candidates.append({
                 "kind": "risky_port" if is_risky else "open_port",
                 "category": "Open Port",
-                "severity": "MEDIUM" if not is_risky else "MEDIUM",
+                "severity": "MEDIUM",
                 "summary": f"Port {p['port']}/{p['service']} reachable from the internet",
                 "marker": f"port:{p['port']}",
                 "details": p,
@@ -240,16 +252,13 @@ def run_scan_cycle(target: str, target_id: int, cfg: dict):
                 "verified": True,
             })
 
-        # 2. Certificate transparency — inventory only. Subdomains are not
+        # 3. Web-surface findings (verified, gated later)
+        candidates.extend(web.get("findings", []))
+
+        # 4. Certificate transparency — inventory only. Subdomains are not
         #    vulnerabilities; keeping them out of findings is what stops the
         #    report turning into a list of 400 hostnames nobody reads.
         subdomains = c.crtsh_subdomains(host)
-
-        # 3. Verified web-surface hunt (headers, cookies, TLS, CORS, exposed
-        #    files with signature checks, crawl inventory, email auth records)
-        web = hunter.scan_web(host, {"max_pages": cfg.get("web_surface_max_pages", 15)})
-        candidates.extend(web.get("findings", []))
-        inventory = web.get("inventory", {})
 
         # 4. CVE correlation against the fingerprinted stack. Only CPE-backed
         #    matches are allowed through; keyword hits are leads, not findings.

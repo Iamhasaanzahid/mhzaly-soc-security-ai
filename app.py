@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MHZALY — AUTONOMOUS SOC & ATTACK-SURFACE INTELLIGENCE v21.3.1 - OPERATOR CONSOLE EDITION
+MHZALY — AUTONOMOUS SOC & ATTACK-SURFACE INTELLIGENCE v21.4.0 - OPERATOR CONSOLE EDITION
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Comprehensive Purple Team Operations Suite (Red Team Recon + Blue Team SOC Automation)
 Author: Muhammad Hassaan Zahid
@@ -47,6 +47,8 @@ from core import notifier
 from core import posture as posture_mod
 from core import scheduler
 from core import reporter
+from core import hunter
+from core import verify as verify_mod
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -788,7 +790,18 @@ class ThreatIntelService:
 class AdvancedReconEngine:
     @staticmethod
     def audit_infrastructure(domain: str) -> Dict[str, Any]:
-        report = {'dns': {}, 'ports': [], 'ssl': {'valid': False}, 'headers': {}}
+        """Evidence-based infrastructure audit.
+
+        The old version disabled certificate verification and read headers from
+        an unverified connection, then scanned ports on whatever IP the name
+        resolved to. On a CDN-fronted site that produced three classes of false
+        positive: "invalid certificate", "missing headers" and "open 8080/8443".
+        Everything here now records how it was checked.
+        """
+        report = {
+            'dns': {}, 'ports': [], 'ssl': {'valid': False}, 'headers': {},
+            'headers_checked': False, 'cdn': None, 'notes': [],
+        }
         try:
             clean_domain = domain.replace('https://', '').replace('http://', '').split('/')[0]
 
@@ -801,114 +814,124 @@ class AdvancedReconEngine:
                 except Exception:
                     report['dns'][rtype] = []
 
-            common_ports = [21, 22, 25, 53, 80, 110, 443, 445, 1433, 3306, 3389, 5432, 8080, 8443, 9200]
-            open_ports = []
-            seen_ports = set()
-
-            def scan_port(port):
-                if port in seen_ports:
-                    return None
-                seen_ports.add(port)
+            # ── HTTP headers: one verified fetch of the canonical document ──
+            home = None
+            try:
+                home = with_retry(requests.get, f"https://{clean_domain}", timeout=6, verify=True)
+            except Exception as first_error:
                 try:
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    sock.settimeout(1.0)
-                    res = sock.connect_ex((clean_domain, port))
-                    banner = ""
-                    if res == 0:
-                        try:
-                            if port in [21, 22, 25, 110]:
-                                banner = sock.recv(128).decode('utf-8', errors='ignore').strip()
-                            elif port in [80, 443, 8080, 8443]:
-                                sock.sendall(b"HEAD / HTTP/1.0\r\n\r\n")
-                                banner = sock.recv(256).decode('utf-8', errors='ignore').split('\r\n')[0].strip()
-                        except Exception:
-                            pass
-                        sock.close()
-                        sname = {
-                            21: 'FTP', 22: 'SSH', 25: 'SMTP', 53: 'DNS', 80: 'HTTP',
-                            110: 'POP3', 443: 'HTTPS', 445: 'SMB', 1433: 'MSSQL',
-                            3306: 'MySQL', 3389: 'RDP', 5432: 'PostgreSQL', 8080: 'HTTP-Alt',
-                            8443: 'HTTPS-Alt', 9200: 'Elasticsearch'
-                        }.get(port, 'Unknown')
-                        return {'port': port, 'service': sname, 'status': 'OPEN', 'banner': banner[:100]}
-                except Exception:
-                    pass
-                return None
+                    home = with_retry(requests.get, f"https://{clean_domain}", timeout=6, verify=False)
+                    report['notes'].append(
+                        "TLS trust failed during the header fetch, so headers were read over an "
+                        f"unverified connection ({first_error})."
+                    )
+                except Exception as exc:
+                    report['headers']['error'] = str(exc)
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-                futures = [executor.submit(scan_port, p) for p in common_ports]
-                for f in concurrent.futures.as_completed(futures):
-                    res = f.result()
-                    if res:
-                        open_ports.append(res)
-            report['ports'] = sorted(open_ports, key=lambda x: x['port'])
-
-            try:
-                ctx = ssl.create_default_context()
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-                with socket.create_connection((clean_domain, 443), timeout=3) as sock:
-                    with ctx.wrap_socket(sock, server_hostname=clean_domain) as ssock:
-                        cert = ssock.getpeercert()
-                        if cert:
-                            report['ssl']['valid'] = True
-                            report['ssl']['details'] = {
-                                'subject': dict(x[0] for x in cert.get('subject', [])),
-                                'issuer': dict(x[0] for x in cert.get('issuer', [])),
-                                'version': cert.get('version'),
-                                'not_before': cert.get('notBefore'),
-                                'not_after': cert.get('notAfter')
-                            }
-            except Exception as e:
-                report['ssl']['error'] = str(e)
-
-            try:
-                resp = with_retry(requests.get, f"https://{clean_domain}", timeout=5, verify=False)
-                target_headers = ['Strict-Transport-Security', 'Content-Security-Policy', 'X-Frame-Options', 'X-Content-Type-Options', 'X-XSS-Protection']
-                for h in target_headers:
-                    report['headers'][h] = resp.headers.get(h, 'MISSING')
-            except Exception as e:
-                report['headers']['error'] = str(e)
-
-            try:
-                probe_origin = "https://mhzaly-cors-probe.invalid"
-                cors_resp = with_retry(requests.get, f"https://{clean_domain}", timeout=5, verify=False,
-                                       headers={"Origin": probe_origin})
-                acao = cors_resp.headers.get("Access-Control-Allow-Origin")
-                acac = cors_resp.headers.get("Access-Control-Allow-Credentials", "").lower() == "true"
-                reflects = acao == probe_origin
-                wildcard_with_creds = acao == "*" and acac
-                report['cors'] = {
-                    "checked": True,
-                    "acao": acao or "not set",
-                    "allow_credentials": acac,
-                    "misconfigured": bool(reflects or wildcard_with_creds),
-                    "detail": ("reflects an arbitrary Origin back" if reflects else
-                               "allows '*' together with credentials" if wildcard_with_creds else
-                               "no obvious misconfiguration"),
+            if home is not None:
+                report['headers_checked'] = True
+                report['response_url'] = home.url
+                lowered = {str(k).lower(): str(v) for k, v in home.headers.items()}
+                report['headers'] = {
+                    'Strict-Transport-Security': lowered.get('strict-transport-security', 'MISSING'),
+                    'Content-Security-Policy': lowered.get('content-security-policy', 'MISSING'),
+                    'X-Frame-Options': lowered.get('x-frame-options', 'MISSING'),
+                    'X-Content-Type-Options': lowered.get('x-content-type-options', 'MISSING'),
+                    'Referrer-Policy': lowered.get('referrer-policy', 'MISSING'),
+                    'Permissions-Policy': lowered.get('permissions-policy', 'MISSING'),
                 }
-            except Exception as e:
-                report['cors'] = {"checked": False, "error": str(e)}
+                report['header_grade'] = hunter.grade_security_headers(lowered)
+                report['cdn'] = hunter.detect_cdn(lowered)
+                report['cors'] = hunter.assess_cors(lowered)
+                if report['cdn']:
+                    report['notes'].append(
+                        f"{report['cdn']} edge detected — 80/443/8080/8443 on the edge are proxy "
+                        "ports, not evidence about the origin server."
+                    )
 
-            spf_record, dmarc_record = None, None
+            # ── CORS probe with a synthetic Origin so reflection is observable ──
             try:
-                for r in (report['dns'].get('TXT') or []):
-                    txt = str(r).strip('"')
-                    if txt.lower().startswith('v=spf1'):
-                        spf_record = txt
-                        break
-            except Exception:
-                pass
-            try:
-                dmarc_answers = dns.resolver.resolve(f"_dmarc.{clean_domain}", 'TXT')
-                for r in dmarc_answers:
-                    txt = str(r).strip('"')
-                    if 'v=dmarc1' in txt.lower():
-                        dmarc_record = txt
-                        break
-            except Exception:
-                pass
-            report['email_security'] = {"spf": spf_record, "dmarc": dmarc_record}
+                probe = with_retry(requests.get, f"https://{clean_domain}", timeout=6, verify=False,
+                                   headers={"Origin": hunter.CORS_PROBE_ORIGIN})
+                report['cors'] = hunter.assess_cors(
+                    {str(k).lower(): str(v) for k, v in probe.headers.items()}
+                )
+            except Exception as exc:
+                report.setdefault('cors', {})['error'] = str(exc)
+
+            # ── Ports: only meaningful when the name is not a CDN edge ──
+            if report.get('cdn'):
+                report['ports'] = []
+                report['ports_skipped'] = True
+            else:
+                common_ports = [21, 22, 25, 53, 80, 110, 443, 445, 1433, 3306, 3389, 5432, 8080, 8443, 9200]
+                open_ports = []
+                seen_ports = set()
+
+                def scan_port(port):
+                    if port in seen_ports:
+                        return None
+                    seen_ports.add(port)
+                    try:
+                        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        sock.settimeout(1.0)
+                        res = sock.connect_ex((clean_domain, port))
+                        banner = ""
+                        if res == 0:
+                            try:
+                                if port in [21, 22, 25, 110]:
+                                    banner = sock.recv(128).decode('utf-8', errors='ignore').strip()
+                                elif port in [80, 443, 8080, 8443]:
+                                    sock.sendall(b"HEAD / HTTP/1.0\r\n\r\n")
+                                    banner = sock.recv(256).decode('utf-8', errors='ignore').split('\r\n')[0].strip()
+                            except Exception:
+                                pass
+                            sock.close()
+                            sname = {
+                                21: 'FTP', 22: 'SSH', 25: 'SMTP', 53: 'DNS', 80: 'HTTP',
+                                110: 'POP3', 443: 'HTTPS', 445: 'SMB', 1433: 'MSSQL',
+                                3306: 'MySQL', 3389: 'RDP', 5432: 'PostgreSQL', 8080: 'HTTP-Alt',
+                                8443: 'HTTPS-Alt', 9200: 'Elasticsearch'
+                            }.get(port, 'Unknown')
+                            return {'port': port, 'service': sname, 'status': 'OPEN', 'banner': banner[:100]}
+                    except Exception:
+                        pass
+                    return None
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                    futures = [executor.submit(scan_port, p) for p in common_ports]
+                    for f in concurrent.futures.as_completed(futures):
+                        res = f.result()
+                        if res:
+                            open_ports.append(res)
+                report['ports'] = sorted(open_ports, key=lambda x: x['port'])
+
+            # ── Certificate, verified exactly like a browser would ──
+            tls = hunter.check_tls(clean_domain)
+            report['ssl'] = {
+                **tls,
+                'details': {
+                    'subject': tls.get('subject'),
+                    'issuer': tls.get('issuer'),
+                    'not_before': tls.get('not_before'),
+                    'not_after': tls.get('not_after'),
+                    'version': tls.get('protocol'),
+                },
+            }
+            if not tls.get('valid'):
+                report['notes'].append(
+                    "Certificate validation failed: " + str(tls.get('error') or 'unknown trust error')
+                )
+
+            # ── Email authentication, only when the customer controls the zone ──
+            email = hunter.check_email_security(clean_domain)
+            if hunter.is_managed_domain(clean_domain):
+                email['managed'] = True
+                report['notes'].append(
+                    "SPF/DMARC are controlled by the hosting platform for this domain and are not "
+                    "client-actionable."
+                )
+            report['email_security'] = email
         except ScopeViolation as e:
             report['error'] = f"Scope violation: {e}"
             report['blocked'] = True
@@ -969,16 +992,22 @@ class AnalystNarrator:
 
     def _headers_paragraph(self) -> str:
         headers = self.infra.get('headers', {})
-        if not headers or 'error' in headers:
+        grade = self.infra.get('header_grade') or {}
+        if not self.infra.get('headers_checked'):
             return f"I couldn't grab security headers to grade ({headers.get('error', 'no live HTTPS response')})."
-        missing = [h for h, v in headers.items() if v == 'MISSING']
+        missing = grade.get('missing') or []
         if not missing:
-            return "Security headers look complete — HSTS, CSP, and the rest of the set I check for are all present."
-        return (f"Header hardening has gaps: {len(missing)} of {len(headers)} checked headers are missing "
-                f"({', '.join(missing)}). These are cheap to add at the reverse-proxy/edge layer.")
+            return (f"Security headers look complete — grade {grade.get('grade', 'A')} with HSTS, CSP and "
+                    "the rest of the set all present on the live document response.")
+        return (f"Header hardening has gaps (grade {grade.get('grade', '?')}): {len(missing)} of the graded "
+                f"headers are missing — {', '.join(missing)}. These are cheap to add at the edge layer.")
 
     def _ports_paragraph(self) -> str:
         ports = self.infra.get('ports', [])
+        if self.infra.get('ports_skipped') or self.infra.get('cdn'):
+            cdn = self.infra.get('cdn') or 'a CDN'
+            return (f"Port sweep skipped: {cdn} answers for this host, so 80/443/8080/8443 on the edge are "
+                    "proxy ports and say nothing about the origin server.")
         if not ports:
             return "The port sweep across common services didn't find anything open beyond what's expected."
         names = ", ".join(f"{p['port']}/{p['service']}" for p in ports)
@@ -1042,13 +1071,17 @@ class AnalystNarrator:
         if not cors.get('checked'):
             return ""
         if cors.get('misconfigured'):
-            return f"CORS looks misconfigured: the response {cors.get('detail')}, which can let an attacker-controlled page read authenticated responses cross-origin."
-        return "CORS headers look reasonable — the server didn't blindly reflect an arbitrary Origin back."
+            return (f"CORS looks misconfigured: {cors.get('reason') or cors.get('detail')}, which can let an "
+                    "attacker-controlled page read authenticated responses cross-origin.")
+        return (f"CORS headers look reasonable — {cors.get('reason', 'the server did not reflect an arbitrary Origin back')}.")
 
     def _email_security_paragraph(self) -> str:
         es = self.infra.get('email_security', {})
         if not es:
             return ""
+        if es.get('managed'):
+            return ("SPF/DMARC are controlled by the hosting platform for this domain, so they are not a "
+                    "client-actionable gap here.")
         spf, dmarc = es.get('spf'), es.get('dmarc')
         if spf and dmarc:
             return "Email anti-spoofing is in place — both SPF and DMARC records are published."
@@ -1078,6 +1111,41 @@ class AnalystNarrator:
             d = ssl_res.get('details', {})
             return f"Transport Security & Cryptographic Posture: TLS Handshake successfully negotiated with issuer `{d.get('issuer', {}).get('organizationName', 'Unknown CA')}`. Certificate validity active until `{d.get('not_after', 'Unknown')}`. Probe round-trip latency measured at `{latency} ms`."
         return f"Transport Security & Cryptographic Posture: TLS negotiation unverified from probe node ({ssl_res.get('error', 'No HTTPS response')}). Round-trip latency: `{latency} ms`."
+
+    def _remediation_paragraph(self) -> str:
+        """Only recommend what the evidence actually shows."""
+        actions: List[str] = []
+        missing = (self.infra.get("header_grade") or {}).get("missing") or []
+        if missing:
+            actions.append("publish the missing security headers: " + ", ".join(missing))
+        cors = self.infra.get("cors") or {}
+        if cors.get("misconfigured"):
+            actions.append("restrict CORS to an explicit origin allow-list and never reflect arbitrary Origins")
+        ssl_res = self.infra.get("ssl") or {}
+        if not ssl_res.get("valid"):
+            actions.append("restore a publicly trusted certificate chain before serving traffic")
+        if not self.infra.get("ports_skipped"):
+            risky = [p for p in (self.infra.get("ports") or [])
+                     if p.get("port") in RISKY_PUBLIC_PORTS and not p.get("edge")]
+            if risky:
+                actions.append("close or firewall the management/database ports listed above")
+        email = self.infra.get("email_security") or {}
+        if email and not email.get("managed") and not (email.get("spf") and email.get("dmarc")):
+            actions.append("publish SPF and DMARC records for the mail domain")
+
+        score = self.risk.get("score", "?")
+        band = self.risk.get("band", "UNKNOWN")
+        if not actions:
+            return (
+                f"**Forensic Conclusion:** The asset scores **{score}/100 ({band})**. "
+                "No action is required from the checks performed: transport, headers, CORS, cookies, "
+                "email authentication and the exposed-path sweep all came back clean. Keep the deployment "
+                "on managed platform defaults and re-scan after each release."
+            )
+        return (
+            f"**Forensic Conclusion:** The asset scores **{score}/100 ({band})**. "
+            "Prioritised remediation: " + "; ".join(actions) + "."
+        )
 
     def build(self) -> str:
         sections = [
@@ -1114,7 +1182,7 @@ class AnalystNarrator:
             self._threat_intel_paragraph(),
             "",
             "#### 6. Granular Remediation Roadmap & Hardening Controls",
-            f"**Forensic Conclusion:** The asset scores **{self.risk.get('score', '?')}/100 ({self.risk.get('band', 'UNKNOWN')})**. Immediate corrective measures require enforcing strict Content Security Policy, validating TLS cipher suites, and continuously auditing perimeter endpoints.",
+            self._remediation_paragraph(),
             "",
             "_Generated via MHZALY Micro-Forensic Intelligence & Verification Engine._"
         ]
@@ -1154,16 +1222,17 @@ def build_executive_summary(recon: Dict[str, Any], infra: Dict[str, Any],
     if infra.get('cors', {}).get('misconfigured'):
         counts["High"] += 1
 
-    missing_headers = sum(1 for v in infra.get('headers', {}).values() if v == 'MISSING')
+    missing_headers = len((infra.get('header_grade') or {}).get('missing') or []) if infra.get('headers_checked') else 0
     if missing_headers:
-        counts["Medium"] += missing_headers
+        counts["Medium"] += 1
 
-    risky_ports = sum(1 for p in infra.get('ports', []) if p.get('port') in RISKY_PUBLIC_PORTS)
+    risky_ports = sum(1 for p in infra.get('ports', [])
+                      if p.get('port') in RISKY_PUBLIC_PORTS and not p.get('edge'))
     if risky_ports:
-        counts["High"] += risky_ports
+        counts["High"] += 1
 
     es = infra.get('email_security', {})
-    if es and not (es.get('spf') and es.get('dmarc')):
+    if es and not es.get('managed') and not (es.get('spf') and es.get('dmarc')):
         counts["Low"] += 1
 
     return counts
@@ -1376,6 +1445,34 @@ def render_autonomous_tab():
         st.info("No scan runs recorded yet.")
 
 
+def _live_recon_for(target: str, findings: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Re-verify stored findings against the live target (cached for 10 minutes).
+
+    A report must describe the target as it is now, not as it was when the scan
+    ran. Resolved findings are kept and shown as progress instead of silently
+    disappearing.
+    """
+    cache = st.session_state.setdefault("_live_recon_cache", {})
+    entry = cache.get(target)
+    now = time.time()
+    if entry and now - entry.get("ts", 0) < 600:
+        return entry["recon"]
+    try:
+        facts = verify_mod.live_facts(target, paths=verify_mod.collect_probe_paths(findings))
+        recon = verify_mod.reconcile(findings, facts)
+    except Exception as exc:  # keep the studio usable offline
+        recon = {
+            "checked_at": None,
+            "facts": {"errors": [str(exc)]},
+            "fresh": list(findings),
+            "resolved": [], "not_applicable": [], "unverified": [],
+            "counts": {"stored": len(findings), "reproduced": len(findings),
+                       "resolved": 0, "not_applicable": 0, "unverified": 0},
+        }
+    cache[target] = {"ts": now, "recon": recon}
+    return recon
+
+
 def _report_finding_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
     """Translate a database finding into the shape the report engine expects.
 
@@ -1475,7 +1572,8 @@ def _pdf_from_markdown(report_text: str, title: str, subtitle: str = "") -> Opti
 def _compose_client_report(target: str, findings: List[Dict[str, Any]],
                            posture: Dict[str, Any], delta_row: Optional[Dict[str, Any]],
                            evidence_status: Dict[str, Any], body: str,
-                           audience: str, analyst: str) -> str:
+                           audience: str, analyst: str,
+                           live_recon: Optional[Dict[str, Any]] = None) -> str:
     """Wrap the analyst narrative in a signed, proof-carrying client document."""
     date_str = datetime.now().strftime("%d %B %Y")
     severity_order = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
@@ -1529,6 +1627,29 @@ def _compose_client_report(target: str, findings: List[Dict[str, Any]],
         lines.append("This is the first recorded assessment for this target, so there is no delta yet. "
                      "The next run will establish the baseline comparison.")
     lines.append("")
+    if live_recon:
+        counts = live_recon.get("counts") or {}
+        lines.append("## Live re-verification")
+        lines.append("")
+        lines.append(
+            f"Every stored finding was re-checked against the live target at "
+            f"{live_recon.get('checked_at', 'the report time')}. "
+            f"**{counts.get('reproduced', 0)} reproduced**, "
+            f"{counts.get('resolved', 0)} resolved since the scan, "
+            f"{counts.get('not_applicable', 0)} not applicable, "
+            f"{counts.get('unverified', 0)} could not be re-checked."
+        )
+        lines.append("")
+        for f in (live_recon.get("resolved") or [])[:10]:
+            lines.append(f"- ✅ **Resolved** — {f.get('summary', '')} ({f.get('live_reason', '')})")
+        for f in (live_recon.get("not_applicable") or [])[:10]:
+            lines.append(f"- ➖ **Not applicable** — {f.get('summary', '')} ({f.get('live_reason', '')})")
+        if (live_recon.get("resolved") or live_recon.get("not_applicable")):
+            lines.append("")
+        notes = (live_recon.get("facts") or {}).get("notes") or []
+        for note in notes[:5]:
+            lines.append(f"> {note}")
+            lines.append("")
     lines.append("## How this was verified")
     lines.append("")
     lines.append(
@@ -1707,7 +1828,7 @@ def main():
             "background:linear-gradient(135deg,#0b1220,#111827);margin-bottom:12px;'>"
             "<div style='font-size:11px;letter-spacing:.18em;color:#60a5fa;text-transform:uppercase;'>MHZALY</div>"
             "<div style='font-size:20px;font-weight:700;color:#f9fafb;line-height:1.2;'>Security Operations</div>"
-            "<div style='font-size:11px;color:#9ca3af;margin-top:4px;'>Proof-carrying console · v21.3.1</div>"
+            "<div style='font-size:11px;color:#9ca3af;margin-top:4px;'>Proof-carrying console · v21.4.0</div>"
             "</div>",
             unsafe_allow_html=True,
         )
@@ -1741,7 +1862,7 @@ def main():
             st.session_state.authenticated = False
             st.rerun()
         st.markdown("---")
-        st.caption("MHZALY v21.3.1 · Live operations · Proof & posture")
+        st.caption("MHZALY v21.4.0 · Evidence-only reporting · Proof & posture")
         st.caption("Authorized use only — scan assets you own or have written permission to test.")
 
     if module == "Command Telemetry Center":
@@ -1903,8 +2024,10 @@ def main():
                             cve_res = nvd.search_cve(domain_keyword, max_results=8, min_confidence=min_conf)
 
                     top_cvss = max([v.cvss_score for v in cve_res], default=0.0)
-                    missing_headers = sum(1 for v in infra.get('headers', {}).values() if v == 'MISSING')
-                    risky_ports = sum(1 for p in infra.get('ports', []) if p.get('port') in RISKY_PUBLIC_PORTS)
+                    header_grade = infra.get('header_grade') or {}
+                    missing_headers = len(header_grade.get('missing') or []) if infra.get('headers_checked') else 0
+                    risky_ports = sum(1 for p in infra.get('ports', [])
+                                      if p.get('port') in RISKY_PUBLIC_PORTS and not p.get('edge'))
                     exposed_count = len(recon.get('exposed_files', []))
                     open_ports_count = len(infra.get('ports', []))
 
@@ -1940,15 +2063,17 @@ def main():
                                 "severity": "HIGH", "summary": f"Verified exposure: {e.get('path', 'unknown')}",
                                 "confidence": 90, "verified": True, "details": e,
                             })
-                    for h, val in (infra.get("headers") or {}).items():
-                        if val == "MISSING":
-                            engine_findings.append({
-                                "kind": "weak_headers", "category": "Security Headers",
-                                "severity": "MEDIUM", "summary": f"Missing security header: {h}",
-                                "confidence": 85, "verified": True, "details": {"missing": [h]},
-                            })
+                    missing_list = header_grade.get("missing") or []
+                    if infra.get("headers_checked") and missing_list:
+                        engine_findings.append({
+                            "kind": "weak_headers", "category": "Security Headers",
+                            "severity": "MEDIUM",
+                            "summary": "Missing security headers: " + ", ".join(missing_list),
+                            "confidence": 88, "verified": True,
+                            "details": {"missing": missing_list, "grade": header_grade.get("grade")},
+                        })
                     for p in (infra.get("ports") or []):
-                        if p.get("port") in RISKY_PUBLIC_PORTS:
+                        if p.get("port") in RISKY_PUBLIC_PORTS and not p.get("edge"):
                             engine_findings.append({
                                 "kind": "risky_open_port", "category": "Exposure Surface",
                                 "severity": "HIGH", "summary": f"Risky open port: {p.get('port')}/{p.get('service')}",
@@ -2264,12 +2389,13 @@ except Exception as e:
 
                         infra_audit = agent_result.get('infra_audit', {}) or {}
                         exposed_count = len(agent_result.get('exposed_files', []))
-                        missing_headers = sum(
-                            1 for v in infra_audit.get('headers', {}).values() if v == 'MISSING'
+                        missing_headers = (
+                            len((infra_audit.get('header_grade') or {}).get('missing') or [])
+                            if infra_audit.get('headers_checked') else 0
                         )
                         risky_ports = sum(
                             1 for p in infra_audit.get('ports', [])
-                            if p.get('port') in RISKY_PUBLIC_PORTS
+                            if p.get('port') in RISKY_PUBLIC_PORTS and not p.get('edge')
                         )
 
                         risk = compute_risk_score(
@@ -2474,11 +2600,15 @@ except Exception as e:
                 "Prepared by", value="MHZALY Security Engineering", key="studio_analyst"
             )
 
-            picked = [
+            stored = [
                 _report_finding_from_row(r)
                 for r in finding_rows
                 if str(r.get("target")) == studio_target
             ]
+            recon = _live_recon_for(studio_target, stored)
+            picked = recon.get("fresh") or []
+            live_counts = recon.get("counts") or {}
+            facts = recon.get("facts") or {}
             studio_posture = posture_mod.posture_score(picked)
             sev_rank = ["INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"]
             top_severity = max(
@@ -2493,11 +2623,38 @@ except Exception as e:
             m3.metric("Highest severity", top_severity)
             m4.metric("Evidence records", evidence_status.get("records", 0))
 
+            if facts.get("errors"):
+                st.warning(
+                    "Live re-verification could not complete: "
+                    + "; ".join(str(e) for e in facts["errors"][:2])
+                )
+            else:
+                st.markdown(
+                    f"**Live re-verification** — {verify_mod.summary_line(recon)}  \n"
+                    f"<span style='color:#94a3b8;font-size:0.85rem;'>The report is written from the "
+                    f"{live_counts.get('reproduced', 0)} finding(s) that still reproduce today; resolved "
+                    "items are listed as progress, not repeated as open risk.</span>",
+                    unsafe_allow_html=True,
+                )
+
+            resolved_or_na = (recon.get("resolved") or []) + (recon.get("not_applicable") or [])
+            if resolved_or_na:
+                with st.expander(f"Resolved / not applicable since the stored scan ({len(resolved_or_na)})"):
+                    for f in resolved_or_na:
+                        icon = "✅" if f.get("live_status") == "resolved" else "➖"
+                        st.markdown(f"{icon} **{f.get('summary', '')}** — {f.get('live_reason', '')}")
+
             if st.button("✍️ Generate client report", type="primary", use_container_width=True):
                 inventory = {
-                    "origin": f"https://{studio_target}",
-                    "pages": [f"https://{studio_target}"],
+                    "origin": facts.get("origin") or f"https://{studio_target}",
+                    "pages": [facts.get("final_url") or f"https://{studio_target}"],
                     "technologies": [],
+                    "tls": facts.get("tls") or {},
+                    "headers": facts.get("header_grade") or {},
+                    "email_security": facts.get("email") or {},
+                    "cors": facts.get("cors") or {},
+                    "cdn": facts.get("cdn"),
+                    "robots": facts.get("robots") or {},
                 }
                 with st.spinner("Writing the assessment — evidence first, narrative second..."):
                     generated = reporter.generate_report(
@@ -2517,6 +2674,7 @@ except Exception as e:
                         generated["text"],
                         studio_audience,
                         studio_analyst,
+                        live_recon=recon,
                     )
                 st.session_state["studio_report"] = composed
                 st.session_state["studio_source"] = generated.get("source", "local analyst narrative")

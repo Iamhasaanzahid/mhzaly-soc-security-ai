@@ -240,6 +240,30 @@ def local_report(target: str, findings: Iterable[Dict[str, Any]],
     if tech:
         out.append("")
         out.append(f"The host fingerprints as {', '.join(tech[:6])}.")
+
+    posture_bits: List[str] = []
+    if tls.get("valid"):
+        posture_bits.append(
+            f"the live certificate validated against the public trust store "
+            f"(expires {tls.get('not_after', 'unknown')}, {tls.get('days_left', '?')} day(s) left)"
+        )
+    elif tls:
+        posture_bits.append("the certificate did not validate against the public trust store")
+    if headers.get("grade"):
+        missing = headers.get("missing") or []
+        posture_bits.append(
+            f"the root response scored header grade {headers['grade']}"
+            + (f" (missing: {', '.join(missing)})" if missing else "")
+        )
+    if posture_bits:
+        out.append("")
+        out.append("On the wire, " + "; ".join(posture_bits) + ".")
+    if email.get("managed"):
+        out.append("")
+        out.append(
+            "SPF and DMARC are controlled by the hosting platform for this domain, so they are "
+            "excluded from the client-actionable scope."
+        )
     out.append("")
 
     out.append("## What the assessment found")
@@ -302,9 +326,10 @@ def local_report(target: str, findings: Iterable[Dict[str, Any]],
     if not pages:
         gaps.append("the site root could not be fetched, so no crawl was possible")
     if not tls:
-        gaps.append("TLS could not be inspected (port 443 unreachable)")
-    if not email.get("spf") is None or not email.get("dmarc") is None:
-        pass
+        gaps.append("TLS could not be inspected (no completed handshake)")
+    elif not tls.get("valid"):
+        gaps.append("TLS trust could not be established: "
+                    + str(tls.get("error") or "certificate did not validate"))
     if not email:
         gaps.append("email authentication records were not checked")
     gaps.append("I did not test authentication bypass, injection or business-logic flaws; those need an authenticated scope and explicit written authorisation")
@@ -341,6 +366,7 @@ def _impact_for(finding: Dict[str, Any]) -> str:
         "email_dmarc_missing": "Without DMARC anyone can send mail that claims to come from this domain, which is the standard phishing path against its customers.",
         "email_spf_missing": "Without SPF, receiving servers have no way to reject forged envelopes for this domain.",
         "cors_wildcard": "A wildcard CORS policy allows any origin to read authenticated responses where credentials are permitted.",
+        "cors_reflection": "Reflecting an arbitrary Origin lets a hostile page read the response in the victim's browser when the endpoint trusts cookies.",
         "open_port": "An open port is an additional entry point; what matters is the service behind it, which needs a separate, authorised test.",
         "risky_port": "This service should not normally be reachable from the public internet.",
     }
@@ -372,6 +398,8 @@ def _fix_for(finding: Dict[str, Any]) -> str:
         return "Publish an SPF record listing only the sending infrastructure actually in use, and keep it under ten DNS lookups."
     if kind == "cors_wildcard":
         return "Replace the wildcard with an explicit allow-list of origins, and never combine a wildcard with credentials."
+    if kind == "cors_reflection":
+        return "Validate the Origin header against an explicit allow-list and return a fixed ACAO value; never echo the request Origin."
     if kind in {"open_port", "risky_port"}:
         return "Restrict the port to the networks that need it, or close it. Confirm ownership of the service before any deeper test."
     return "Review the evidence and apply the matching hardening control."
@@ -391,6 +419,7 @@ def _fix_short(finding: Dict[str, Any]) -> str:
         "email_dmarc_missing": "publish a DMARC record",
         "email_spf_missing": "publish an SPF record",
         "cors_wildcard": "replace wildcard CORS with an allow-list",
+        "cors_reflection": "stop reflecting arbitrary Origins",
     }
     return quick.get(kind, summary[:90])
 
